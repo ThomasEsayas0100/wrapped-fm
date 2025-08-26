@@ -1,2 +1,4 @@
-/__pycache__/
-/node_modules/
+__pycache__/
+node_modules/
+scrobbles_2025.json
+calendar.svg
