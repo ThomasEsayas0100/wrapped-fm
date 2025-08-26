@@ -1,0 +1,26 @@
+{
+  "name": "lastfm_wrapped",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {},
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "canvas": "^3.1.0",
+    "d3": "^7.9.0",
+    "gifencoder": "^2.0.1",
+    "jsdom": "^26.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-scripts": "^0.0.0",
+    "uvicorn": "^0.0.1-security"
+  }
+}
