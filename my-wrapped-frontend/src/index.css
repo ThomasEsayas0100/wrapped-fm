@@ -5,3 +5,10 @@
 body {
   @apply bg-slate-950 text-slate-100 antialiased;
 }
+
+@layer utilities {
+  .bg-animated {
+    background-size: 400% 400%;
+    animation: gradient 15s ease infinite;
+  }
+}
