@@ -44,11 +44,15 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
       .attr("stroke", "#00000055")
       .attr("stroke-width", 0.5)
       .on("mousemove", function (event, d) {
-        const [x, y] = d3.pointer(event);
+        const [mx, my] = d3.pointer(event);
         const name = d.properties.name;
         const count = countryCounts[name] || 0;
         const topArtists = countryTopArtists[name] || [];
         const artistList = topArtists.length ? topArtists.join(", ") : "No data";
+        const tooltipWidth = 220;
+        const tooltipHeight = 80;
+        const x = Math.min(mx + 20, width - tooltipWidth);
+        const y = Math.min(my + 20, height - tooltipHeight);
         d3.select(this).attr("stroke", "#fff").attr("stroke-width", 1.2);
         setTooltip({ x, y, name, count, artistList });
       })
@@ -63,10 +67,10 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
       <svg ref={svgRef} className="absolute inset-0 w-full h-full" />
 
       {tooltip && (
-        <div
-          className="pointer-events-none absolute z-20 bg-slate-900/90 border border-white/20 rounded-lg px-3 py-2 text-xs shadow-lg backdrop-blur"
-          style={{ left: tooltip.x + 15, top: tooltip.y }}
-        >
+          <div
+            className="pointer-events-none absolute z-20 bg-slate-900/90 border border-white/20 rounded-lg px-3 py-2 text-xs shadow-lg backdrop-blur"
+            style={{ left: tooltip.x, top: tooltip.y }}
+          >
           <p className="font-semibold">{tooltip.name}</p>
           <p>{tooltip.count} plays</p>
           <p className="mt-1 text-[10px] text-violet-200">Top Artists: {tooltip.artistList}</p>
