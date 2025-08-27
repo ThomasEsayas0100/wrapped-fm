@@ -6,6 +6,7 @@ import worldData from "../data/world-110m.json";
 export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }) {
   const svgRef = useRef();
   const [tooltip, setTooltip] = useState(null);
+  const [cursor, setCursor] = useState({ x: -100, y: -100 });
 
   const countries = useMemo(
     () => topojson.feature(worldData, worldData.objects.countries).features,
@@ -27,9 +28,19 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
     const height = window.innerHeight;
     svg.selectAll("*").remove();
     svg.attr("viewBox", [0, 0, width, height]);
-
-    const projection = d3.geoNaturalEarth1().scale(width / 6.5).translate([width / 2, height / 2]);
+    const projection = d3
+      .geoNaturalEarth1()
+      .scale(width / 8)
+      .translate([width / 2, height / 2 + 40]);
     const path = d3.geoPath().projection(projection);
+
+    svg
+      .append("path")
+      .datum({ type: "Sphere" })
+      .attr("d", path)
+      .attr("fill", "#0f172a")
+      .attr("stroke", "#475569")
+      .attr("stroke-width", 0.5);
 
     svg
       .append("g")
@@ -63,7 +74,23 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
   }, [countries, countryCounts, countryTopArtists, colorScale]);
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-gradient-to-b from-slate-950 via-violet-950 to-slate-900 text-white">
+    <div
+      className="relative w-full h-screen overflow-hidden text-white"
+      onMouseMove={e => setCursor({ x: e.clientX, y: e.clientY })}
+    >
+      <div className="absolute inset-0 -z-20 bg-gradient-to-br from-violet-900 via-indigo-900 to-sky-900 bg-animated" />
+      <div className="absolute inset-0 -z-10 overflow-hidden">
+        <div className="absolute top-1/3 left-1/4 w-[40rem] h-[40rem] bg-fuchsia-500/30 rounded-full blur-3xl animate-float" />
+        <div
+          className="absolute top-1/4 left-1/2 w-[30rem] h-[30rem] bg-indigo-500/30 rounded-full blur-3xl animate-float"
+          style={{ animationDelay: "-5s" }}
+        />
+        <div
+          className="absolute top-2/3 left-1/3 w-[35rem] h-[35rem] bg-rose-500/20 rounded-full blur-3xl animate-float"
+          style={{ animationDelay: "-2s" }}
+        />
+      </div>
+
       <svg ref={svgRef} className="absolute inset-0 w-full h-full" />
 
       {tooltip && (
@@ -76,6 +103,11 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
           <p className="mt-1 text-[10px] text-violet-200">Top Artists: {tooltip.artistList}</p>
         </div>
       )}
+
+      <div
+        className="pointer-events-none fixed z-30 w-24 h-24 rounded-full bg-violet-400/10 mix-blend-screen blur-3xl -translate-x-1/2 -translate-y-1/2 transition-all duration-300"
+        style={{ left: cursor.x, top: cursor.y }}
+      />
 
       <header className="absolute top-8 left-1/2 -translate-x-1/2 text-center z-10">
         <h1 className="text-5xl font-bold tracking-tight bg-gradient-to-r from-violet-400 to-rose-400 bg-clip-text text-transparent drop-shadow-lg">
