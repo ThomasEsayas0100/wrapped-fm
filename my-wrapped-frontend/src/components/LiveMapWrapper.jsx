@@ -23,17 +23,19 @@ export default function LiveMapWrapper() {
     return () => clearInterval(interval);
   }, []);
 
+  const isLoading = Object.keys(data.countryCounts).length === 0;
+
   return (
-    Object.keys(data.countryCounts).length === 0
-        ? <p>Loading map data...</p>
-        : <CountryHeatmapSlide
-            countryCounts={data.countryCounts}
-            countryTopArtists={data.countryTopArtists}
-          />
-      
-    // <CountryHeatmapSlide
-    //   countryCounts={data.countryCounts}
-    //   countryTopArtists={data.countryTopArtists}
-    // />
+    isLoading ? (
+      <div className="flex items-center justify-center w-full h-screen bg-slate-950 text-slate-300">
+        <span className="animate-pulse text-violet-400 mr-2">♪</span>
+        Loading map data...
+      </div>
+    ) : (
+      <CountryHeatmapSlide
+        countryCounts={data.countryCounts}
+        countryTopArtists={data.countryTopArtists}
+      />
+    )
   );
 }

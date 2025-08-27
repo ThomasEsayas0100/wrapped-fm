@@ -1,9 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 const WrappedFMLanding = () => {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
-  const [isHovered, setIsHovered] = useState(false);
 
   // Data points for sparkline
   const sparklinePoints = useRef(
