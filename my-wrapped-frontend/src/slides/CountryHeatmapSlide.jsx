@@ -1,73 +1,132 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 import * as topojson from "topojson-client";
-import worldData from "../data/world-110m.json"; // ✅ relative path from slides folder
+import worldData from "../data/world-110m.json";
+import LandingBackground from "../components/LandingPage.jsx";
 
 export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }) {
   const svgRef = useRef();
-  const [tooltipContent, setTooltipContent] = useState(null);
+  const [tooltip, setTooltip] = useState(null);
+  const [cursor, setCursor] = useState({ x: -100, y: -100 });
+
+  const countries = useMemo(
+    () => topojson.feature(worldData, worldData.objects.countries).features,
+    []
+  );
+
+  const maxCount = useMemo(() => d3.max(Object.values(countryCounts)), [countryCounts]);
+  const colorScale = useMemo(
+    () =>
+      d3
+        .scaleSequentialSqrt(d3.interpolatePlasma)
+        .domain([1, maxCount || 1]),
+    [maxCount]
+  );
 
   useEffect(() => {
     const svg = d3.select(svgRef.current);
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-
+    const { width, height } = svgRef.current.getBoundingClientRect();
     svg.selectAll("*").remove();
     svg.attr("viewBox", [0, 0, width, height]);
-
-    const projection = d3.geoNaturalEarth1().scale(width / 6.5).translate([width / 2, height / 2]);
+    const projection = d3
+      .geoNaturalEarth1()
+      .scale(width / 7)
+      .translate([width / 2, height / 2]);
     const path = d3.geoPath().projection(projection);
 
-    const maxCount = d3.max(Object.values(countryCounts));
-    const colorScale = d3
-      .scaleSequentialSqrt(d3.interpolateTurbo)
-      .domain([0, maxCount || 1]);
-
-    const countries = topojson.feature(worldData, worldData.objects.countries);
+    svg
+      .append("path")
+      .datum({ type: "Sphere" })
+      .attr("d", path)
+      .attr("fill", "#0f172a")
+      .attr("stroke", "#475569")
+      .attr("stroke-width", 0.5);
 
     svg
       .append("g")
       .selectAll("path")
-      .data(countries.features)
+      .data(countries)
       .join("path")
       .attr("d", path)
       .attr("fill", d => {
-        const name = d.properties.name;
-        const count = countryCounts[name] || 0;
-        return count > 0 ? colorScale(count) : "#1e1e2e";
+        const count = countryCounts[d.properties.name] || 0;
+        return count ? colorScale(count) : "#222";
       })
-      .attr("stroke", "#ffffff33")
+      .attr("stroke", "#00000055")
       .attr("stroke-width", 0.5)
-      .on("mousemove", (event, d) => {
+      .on("mousemove", function (event, d) {
+        const [mx, my] = d3.pointer(event);
         const name = d.properties.name;
         const count = countryCounts[name] || 0;
         const topArtists = countryTopArtists[name] || [];
-        const artistList = topArtists.length > 0 ? topArtists.join(", ") : "No data";
-        setTooltipContent(`${name} — ${count} plays\nTop Artists: ${artistList}`);
+        const artistList = topArtists.length ? topArtists.join(", ") : "No data";
+        const tooltipWidth = 220;
+        const tooltipHeight = 80;
+        const x = Math.min(mx + 20, width - tooltipWidth);
+        const y = Math.min(my + 20, height - tooltipHeight);
+        d3.select(this).attr("stroke", "#fff").attr("stroke-width", 1.2);
+        setTooltip({ x, y, name, count, artistList });
       })
-      .on("mouseout", () => {
-        setTooltipContent(null);
+      .on("mouseout", function () {
+        d3.select(this).attr("stroke", "#00000055").attr("stroke-width", 0.5);
+        setTooltip(null);
       });
-  }, [countryCounts, countryTopArtists]);
+  }, [countries, countryCounts, countryTopArtists, colorScale]);
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-gradient-to-b from-[#050026] to-[#120933]">
-    <svg ref={svgRef} className="absolute inset-0 w-full h-full" />
+    <div
+      className="relative w-full h-screen overflow-hidden text-white"
+      onMouseMove={e => setCursor({ x: e.clientX, y: e.clientY })}
+    >
+      <LandingBackground />
 
-    {tooltipContent && (
-      <div className="fixed top-1/2 right-6 transform -translate-y-1/2 w-72 bg-white/10 text-white p-4 rounded-xl backdrop-blur-md shadow-xl text-sm font-mono whitespace-pre-wrap z-50">
-        {tooltipContent}
+      <div className="relative z-0 flex items-center justify-center w-full h-full px-4">
+        <div className="relative w-full max-w-7xl h-[90vh]">
+          <div
+            className="absolute inset-0 rounded-3xl p-[3px] bg-gradient-to-r from-yellow-400 via-pink-500 to-orange-500 bg-[length:400%_400%] animate-border pointer-events-none shadow-[0_0_25px_rgba(255,200,100,0.3)]"
+            style={{
+              WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              WebkitMaskComposite: 'xor',
+              maskComposite: 'exclude'
+            }}
+          />
+          <div className="relative w-full h-full rounded-3xl bg-slate-900/30 backdrop-blur-xl overflow-hidden">
+            <svg ref={svgRef} className="absolute inset-x-0 top-24 bottom-0 w-full" />
+
+            {tooltip && (
+              <div
+                className="pointer-events-none absolute z-20 bg-slate-900/90 border border-white/20 rounded-lg px-3 py-2 text-xs shadow-lg backdrop-blur"
+                style={{ left: tooltip.x, top: tooltip.y }}
+              >
+                <p className="font-semibold">{tooltip.name}</p>
+                <p>{tooltip.count} plays</p>
+                <p className="mt-1 text-[10px] text-violet-200">Top Artists: {tooltip.artistList}</p>
+              </div>
+            )}
+
+            <header className="absolute top-6 left-1/2 -translate-x-1/2 text-center z-10 pointer-events-none">
+              <h1 className="text-5xl font-bold tracking-tight bg-gradient-to-r from-yellow-200 via-pink-200 to-orange-200 bg-clip-text text-transparent drop-shadow-lg">
+                Where Your Music Comes From
+              </h1>
+              <p className="mt-2 text-sm text-slate-300 max-w-lg mx-auto">
+                Hover over a country to reveal your play count and top artists from that region.
+              </p>
+            </header>
+
+            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center text-xs text-slate-300 z-10">
+              <span className="mr-2">Less</span>
+              <div className="h-2 w-48 bg-gradient-to-r from-violet-900 via-fuchsia-600 to-yellow-300 rounded" />
+              <span className="ml-2">More</span>
+            </div>
+          </div>
+        </div>
       </div>
-    )}
 
-    <div className="absolute top-10 left-10 text-white z-10">
-      <h1 className="text-4xl font-bold text-cyan-300 drop-shadow">Where Your Music Comes From</h1>
-      <p className="text-sm text-magenta-100 mt-2 max-w-md">
-        This map visualizes the total number of scrobbles from artists based in each country. Hover over a country to see details.
-      </p>
+      <div
+        className="pointer-events-none fixed z-30 w-24 h-24 rounded-full bg-violet-400/10 mix-blend-screen blur-3xl -translate-x-1/2 -translate-y-1/2 transition-all duration-300"
+        style={{ left: cursor.x, top: cursor.y }}
+      />
     </div>
-  </div>
-
-
   );
 }

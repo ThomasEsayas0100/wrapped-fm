@@ -1,9 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 const WrappedFMLanding = () => {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
-  const [isHovered, setIsHovered] = useState(false);
 
   // Data points for sparkline
   const sparklinePoints = useRef(
@@ -83,7 +82,7 @@ const WrappedFMLanding = () => {
       }
 
       time += 0.01;
-      ctx.fillStyle = 'rgba(15, 15, 35, 1)';
+      ctx.fillStyle = 'rgba(8, 8, 24, 1)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       blobs.forEach((blob, index) => {
@@ -202,7 +201,7 @@ const WrappedFMLanding = () => {
     };
   }, []);
 
-  return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full z-0" />;
+  return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full -z-10" />;
 };
 
 export default WrappedFMLanding;
