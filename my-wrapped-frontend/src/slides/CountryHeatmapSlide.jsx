@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 import * as topojson from "topojson-client";
 import worldData from "../data/world-110m.json";
+import LandingBackground from "../components/LandingPage.jsx";
 
 export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }) {
   const svgRef = useRef();
@@ -17,7 +18,7 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
   const colorScale = useMemo(
     () =>
       d3
-        .scaleSequentialLog(d3.interpolatePlasma)
+        .scaleSequentialSqrt(d3.interpolatePlasma)
         .domain([1, maxCount || 1]),
     [maxCount]
   );
@@ -30,7 +31,7 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
     const projection = d3
       .geoNaturalEarth1()
       .scale(width / 7)
-      .translate([width / 2, height / 2 + 20]);
+      .translate([width / 2, height / 2]);
     const path = d3.geoPath().projection(projection);
 
     svg
@@ -77,18 +78,7 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
       className="relative w-full h-screen overflow-hidden text-white"
       onMouseMove={e => setCursor({ x: e.clientX, y: e.clientY })}
     >
-      <div className="absolute inset-0 -z-20 bg-gradient-to-br from-indigo-950 via-purple-900 to-sky-950 bg-animated" />
-      <div className="absolute inset-0 -z-10 overflow-hidden">
-        <div className="absolute top-1/3 left-1/4 w-[40rem] h-[40rem] bg-fuchsia-500/20 rounded-full blur-3xl animate-float" />
-        <div
-          className="absolute top-1/4 left-1/2 w-[30rem] h-[30rem] bg-indigo-500/20 rounded-full blur-3xl animate-float"
-          style={{ animationDelay: "-5s" }}
-        />
-        <div
-          className="absolute top-2/3 left-1/3 w-[35rem] h-[35rem] bg-rose-500/10 rounded-full blur-3xl animate-float"
-          style={{ animationDelay: "-2s" }}
-        />
-      </div>
+      <LandingBackground />
 
       <div className="relative z-0 flex items-center justify-center w-full h-full px-4">
         <div className="relative w-full max-w-7xl h-[90vh]">
@@ -102,7 +92,7 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
             }}
           />
           <div className="relative w-full h-full rounded-3xl bg-slate-900/30 backdrop-blur-xl overflow-hidden">
-            <svg ref={svgRef} className="absolute inset-0 w-full h-full" />
+            <svg ref={svgRef} className="absolute inset-x-0 top-24 bottom-0 w-full" />
 
             {tooltip && (
               <div
@@ -115,7 +105,7 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
               </div>
             )}
 
-            <header className="absolute top-6 left-1/2 -translate-x-1/2 text-center z-10">
+            <header className="absolute top-6 left-1/2 -translate-x-1/2 text-center z-10 pointer-events-none">
               <h1 className="text-5xl font-bold tracking-tight bg-gradient-to-r from-yellow-200 via-pink-200 to-orange-200 bg-clip-text text-transparent drop-shadow-lg">
                 Where Your Music Comes From
               </h1>
