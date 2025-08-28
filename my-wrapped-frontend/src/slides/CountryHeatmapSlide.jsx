@@ -29,8 +29,8 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
     svg.attr("viewBox", [0, 0, width, height]);
     const projection = d3
       .geoNaturalEarth1()
-      .scale(width / 6)
-      .translate([width / 2, height / 2]);
+      .scale(width / 7)
+      .translate([width / 2, height / 2 + 20]);
     const path = d3.geoPath().projection(projection);
 
     svg
@@ -77,7 +77,7 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
       className="relative w-full h-screen overflow-hidden text-white"
       onMouseMove={e => setCursor({ x: e.clientX, y: e.clientY })}
     >
-      <div className="absolute inset-0 -z-20 bg-gradient-to-br from-indigo-950 via-purple-900 to-sky-950 bg-[length:300%_300%] animate-gradient-slow" />
+      <div className="absolute inset-0 -z-20 bg-gradient-to-br from-indigo-950 via-purple-900 to-sky-950 bg-animated" />
       <div className="absolute inset-0 -z-10 overflow-hidden">
         <div className="absolute top-1/3 left-1/4 w-[40rem] h-[40rem] bg-fuchsia-500/20 rounded-full blur-3xl animate-float" />
         <div
@@ -91,7 +91,16 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
       </div>
 
       <div className="relative z-0 flex items-center justify-center w-full h-full px-4">
-        <div className="relative w-full max-w-7xl h-[90vh] p-[3px] rounded-3xl bg-gradient-to-r from-yellow-400 via-pink-500 to-orange-500 bg-[length:400%_400%] animate-border shadow-[0_0_25px_rgba(255,200,100,0.3)]">
+        <div className="relative w-full max-w-7xl h-[90vh]">
+          <div
+            className="absolute inset-0 rounded-3xl p-[3px] bg-gradient-to-r from-yellow-400 via-pink-500 to-orange-500 bg-[length:400%_400%] animate-border pointer-events-none shadow-[0_0_25px_rgba(255,200,100,0.3)]"
+            style={{
+              WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              WebkitMaskComposite: 'xor',
+              maskComposite: 'exclude'
+            }}
+          />
           <div className="relative w-full h-full rounded-3xl bg-slate-900/30 backdrop-blur-xl overflow-hidden">
             <svg ref={svgRef} className="absolute inset-0 w-full h-full" />
 
