@@ -77,7 +77,7 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
       className="relative w-full h-screen overflow-hidden text-white"
       onMouseMove={e => setCursor({ x: e.clientX, y: e.clientY })}
     >
-      <div className="absolute inset-0 -z-20 bg-gradient-to-br from-slate-950 via-slate-900 to-black bg-animated" />
+      <div className="absolute inset-0 -z-20 bg-gradient-to-br from-indigo-950 via-purple-900 to-sky-950 bg-[length:300%_300%] animate-gradient-slow" />
       <div className="absolute inset-0 -z-10 overflow-hidden">
         <div className="absolute top-1/3 left-1/4 w-[40rem] h-[40rem] bg-fuchsia-500/20 rounded-full blur-3xl animate-float" />
         <div
@@ -91,8 +91,8 @@ export default function CountryHeatmapSlide({ countryCounts, countryTopArtists }
       </div>
 
       <div className="relative z-0 flex items-center justify-center w-full h-full px-4">
-        <div className="relative w-full max-w-5xl h-[85vh] p-[3px] rounded-3xl bg-gradient-to-r from-yellow-400 via-pink-500 to-orange-500 bg-[length:400%_400%] animate-border shadow-[0_0_25px_rgba(255,200,100,0.3)]">
-          <div className="relative w-full h-full rounded-3xl bg-slate-900/40 backdrop-blur-md overflow-hidden">
+        <div className="relative w-full max-w-7xl h-[90vh] p-[3px] rounded-3xl bg-gradient-to-r from-yellow-400 via-pink-500 to-orange-500 bg-[length:400%_400%] animate-border shadow-[0_0_25px_rgba(255,200,100,0.3)]">
+          <div className="relative w-full h-full rounded-3xl bg-slate-900/30 backdrop-blur-xl overflow-hidden">
             <svg ref={svgRef} className="absolute inset-0 w-full h-full" />
 
             {tooltip && (
