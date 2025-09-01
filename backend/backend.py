@@ -558,6 +558,28 @@ def filter_track_df_by_time(tracks_df, local_start_hour, local_end_hour):
 
     return pd.DataFrame(filtered_rows)
 
+
+def filter_track_df_by_date(tracks_df, start_date, end_date):
+    """
+    Filters tracks to only those with scrobbles between start_date and end_date (inclusive).
+    Dates should be strings in the format YYYY-MM-DD and are interpreted in the local timezone.
+    """
+    start_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=pytz.UTC).astimezone().date()
+    end_date = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=pytz.UTC).astimezone().date()
+
+    filtered_rows = []
+    for _, row in tracks_df.iterrows():
+        matching_times = [ts for ts in row['timestamps'] if start_date <= ts.date() <= end_date]
+        if matching_times:
+            filtered_rows.append({
+                'artist': row['artist'],
+                'track': row['track'],
+                'album': row['album'],
+                'timestamps': matching_times
+            })
+
+    return pd.DataFrame(filtered_rows)
+
 def hour_pie_chart(scrobbles):
     '''
     Listening hours pie chart data
@@ -574,6 +596,52 @@ def hour_pie_chart(scrobbles):
         else:
             hour_counts[hour] = 1
     return hour_counts
+
+
+def filtered_tag_scores_by_date(tracks_df, start_date, end_date, threshold=0.025):
+    """
+    Calculates weighted and normalized tag scores for scrobbled tracks in a date range.
+    Filters out tags contributing less than the given threshold (default: 1%).
+    Returns a dictionary of {tag: normalized_weight}.
+    """
+    tracks_df = filter_track_df_by_date(tracks_df, start_date, end_date)
+    tag_totals = defaultdict(float)
+
+    for _, row in tracks_df.iterrows():
+        track = row['track']
+        album = row.get('album')  # Allow for None
+        artist = row['artist']
+        tags = get_track_tags(artist, track, album)  # Returns {tag: weight}
+        play_count = len(row['timestamps'])
+
+        for tag, weight in tags.items():
+            tag_totals[tag] += weight * play_count
+
+    total_weight = sum(tag_totals.values())
+    if total_weight == 0:
+        return {}
+
+    # Normalize scores to sum to 1
+    normalized_tags = {
+        tag: score / total_weight for tag, score in tag_totals.items()
+    }
+
+    # Filter out tags below threshold
+    filtered_tags = {
+        tag: weight for tag, weight in normalized_tags.items()
+        if weight >= threshold
+    }
+
+    filtered_total = sum(filtered_tags.values())
+    if filtered_total == 0:
+        return {}
+
+    # Re-normalize
+    final_tags = {
+        tag: weight / filtered_total for tag, weight in filtered_tags.items()
+    }
+
+    return final_tags
 
 def filtered_tag_scores(tracks_df, start_hour, end_hour, threshold=0.025):
     """
