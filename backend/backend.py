@@ -575,13 +575,9 @@ def hour_pie_chart(scrobbles):
             hour_counts[hour] = 1
     return hour_counts
 
-def filtered_tag_scores(tracks_df, start_hour, end_hour, threshold=0.025):
-    """
-    Calculates weighted and normalized tag scores for scrobbled tracks in a time window.
-    Filters out tags contributing less than the given threshold (default: 1%).
-    Returns a dictionary of {tag: normalized_weight}.
-    """
-    tracks_df = filter_track_df_by_time(tracks_df, start_hour, end_hour)
+
+def _aggregate_tag_scores(tracks_df):
+    """Collect and normalize weighted tag scores for the provided tracks."""
     tag_totals = defaultdict(float)
 
     for _, row in tracks_df.iterrows():
@@ -598,27 +594,32 @@ def filtered_tag_scores(tracks_df, start_hour, end_hour, threshold=0.025):
     if total_weight == 0:
         return {}
 
-    # Normalize scores to sum to 1
-    normalized_tags = {
-        tag: score / total_weight for tag, score in tag_totals.items()
-    }
+    return {tag: score / total_weight for tag, score in tag_totals.items()}
 
-    # Filter out tags below threshold
+
+def tag_scores(tracks_df, threshold=0.025):
+    """Return normalized tag scores, filtered by a minimum weight threshold."""
+    normalized_tags = _aggregate_tag_scores(tracks_df)
+
     filtered_tags = {
-        tag: weight for tag, weight in normalized_tags.items()
-        if weight >= threshold
+        tag: weight for tag, weight in normalized_tags.items() if weight >= threshold
     }
 
     filtered_total = sum(filtered_tags.values())
     if filtered_total == 0:
         return {}
 
-    # Re-normalize
-    final_tags = {
-        tag: weight / filtered_total for tag, weight in filtered_tags.items()
-    }
+    return {tag: weight / filtered_total for tag, weight in filtered_tags.items()}
 
-    return final_tags
+
+def filtered_tag_scores(tracks_df, start_hour, end_hour, threshold=0.025):
+    """
+    Calculates weighted and normalized tag scores for scrobbled tracks in a time window.
+    Filters out tags contributing less than the given threshold (default: 1%).
+    Returns a dictionary of {tag: normalized_weight}.
+    """
+    tracks_df = filter_track_df_by_time(tracks_df, start_hour, end_hour)
+    return tag_scores(tracks_df, threshold)
 
 
 @app.get("/country-summary")
