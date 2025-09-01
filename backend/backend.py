@@ -559,26 +559,56 @@ def filter_track_df_by_time(tracks_df, local_start_hour, local_end_hour):
     return pd.DataFrame(filtered_rows)
 
 
-def filter_track_df_by_date(tracks_df, start_date, end_date):
+def filter_track_df_by_date(tracks_df, local_start_date, local_end_date):
     """
-    Filters tracks to only those with scrobbles between start_date and end_date (inclusive).
-    Dates should be strings in the format YYYY-MM-DD and are interpreted in the local timezone.
+    Filter tracks to only those with scrobbles between ``local_start_date`` and
+    ``local_end_date`` (inclusive).
+
+    Each timestamp is assumed to be in UTC and is converted to the local
+    timezone before the date portion is compared.  Rows with no timestamps in
+    the range are dropped and remaining timestamps are trimmed to the range.
+
+    Parameters
+    ----------
+    tracks_df : pd.DataFrame
+        DataFrame where the ``timestamps`` column contains lists of ``datetime``
+        objects in UTC.
+    local_start_date, local_end_date : Union[str, datetime.date]
+        Date range to filter on.  Strings are parsed as ``YYYY-MM-DD``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame with timestamps limited to the specified date range.
     """
-    start_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=pytz.UTC).astimezone().date()
-    end_date = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=pytz.UTC).astimezone().date()
 
-    filtered_rows = []
-    for _, row in tracks_df.iterrows():
-        matching_times = [ts for ts in row['timestamps'] if start_date <= ts.date() <= end_date]
-        if matching_times:
-            filtered_rows.append({
-                'artist': row['artist'],
-                'track': row['track'],
-                'album': row['album'],
-                'timestamps': matching_times
-            })
+    # Ensure date objects
+    start_date = pd.to_datetime(local_start_date).date()
+    end_date = pd.to_datetime(local_end_date).date()
 
-    return pd.DataFrame(filtered_rows)
+    local_tz = dateutil.tz.tzlocal()
+
+    # Explode timestamps so each row corresponds to a single play
+    exploded = tracks_df.explode("timestamps")
+
+    # Convert to local dates
+    local_dates = (
+        exploded["timestamps"].dt.tz_localize(pytz.UTC)
+        .dt.tz_convert(local_tz)
+        .dt.date
+    )
+
+    mask = (local_dates >= start_date) & (local_dates <= end_date)
+    filtered = exploded[mask]
+
+    if filtered.empty:
+        return pd.DataFrame(columns=tracks_df.columns)
+
+    return (
+        filtered.groupby(level=0)
+        .agg({"artist": "first", "track": "first", "album": "first", "timestamps": list})
+        .reset_index(drop=True)
+    )
 
 def hour_pie_chart(scrobbles):
     '''
