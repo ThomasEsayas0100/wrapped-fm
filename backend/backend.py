@@ -637,30 +637,101 @@ def _normalize_and_threshold(tag_totals: dict[str, float], threshold: float = 0.
 
 
 def compute_weekly_tag_distributions_from_scrobbles(
-    scrobbles: list[dict], year_filter: int = 2025, threshold: float = 0.025
+    scrobbles: list[dict], year_filter: int = 2025, threshold: float = 0.025, progress: bool = True, top_k: int = 5
 ) -> dict[str, dict]:
-    week_track_counts = defaultdict(Counter)
-    week_scrobble_counts = defaultdict(int)
+    start_all = time.perf_counter()
 
-    for s in scrobbles:
-        wk, iso_year = _week_key_local(s["timestamp"])
-        if iso_year != year_filter:
-            continue
-        key = (s.get("artist", ""), s.get("album", ""), s.get("track", ""))
-        week_track_counts[wk][key] += 1
-        week_scrobble_counts[wk] += 1
+    df = pd.DataFrame(scrobbles)
+    if df.empty:
+        return {}
+    dt_local = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(LOCAL_TZ)
+    iso = dt_local.dt.isocalendar()
+    df["iso_year"] = iso["year"]
+    df["week"] = iso["year"].astype(str) + "-W" + iso["week"].astype(str).str.zfill(2)
+    df_year = df[df["iso_year"] == year_filter]
 
-    weekly = {}
-    for wk, counter in week_track_counts.items():
-        totals = defaultdict(float)
-        for (artist, album, track), count in counter.items():
-            for tag, w in get_cached_track_tags(artist, album, track).items():
-                totals[tag] += float(w) * count
-        weekly[wk] = {
-            "tags": _normalize_and_threshold(totals, threshold=threshold),
-            "scrobbles": week_scrobble_counts[wk],
-        }
+    # 0) Gather unique track keys and prefetch tags
+    unique_keys = set(zip(df_year["artist"], df_year["album"], df_year["track"]))
+    gather_done = time.perf_counter()
+    if progress:
+        print(f"⏱️ gathered {len(unique_keys)} unique tracks in {gather_done - start_all:.2f}s")
+
+    fetched = prefetch_tags_for_keys(unique_keys)
+    prefetch_done = time.perf_counter()
+    if progress:
+        print(f"⚡ Prefetched tags for {fetched} tracks (mode={TAG_MODE}).")
+        print(f"⏱️ prefetch completed in {prefetch_done - gather_done:.2f}s")
+
+    # Build a local cache dict (fast lookups, avoids repeated dict key build)
+    tag_cache = {key: get_track_tags_fast(*key) for key in unique_keys}
+
+    # 1) Count scrobbles per week & track
+    grouped = (
+        df_year.groupby(["week", "artist", "album", "track"])
+        .size()
+        .reset_index(name="count")
+    )
+    week_scrobble_counts = grouped.groupby("week")["count"].sum().to_dict()
+    count_done = time.perf_counter()
+    if progress:
+        total_scrobbles = int(sum(week_scrobble_counts.values()))
+        print(f"⏱️ counted {total_scrobbles} scrobbles in {count_done - prefetch_done:.2f}s")
+
+    # 2) Accumulate totals with cached lookups
+    weekly: dict[str, dict] = {}
+    for wk, sub in grouped.groupby("week"):
+        step_start = time.perf_counter()
+        tag_totals = defaultdict(float)
+
+        for _, row in sub.iterrows():
+            weights = tag_cache[(row["artist"], row["album"], row["track"])]
+            for tag, w in weights.items():
+                tag_totals[tag] += float(w) * row["count"]
+
+        tags_norm = _normalize_and_threshold(tag_totals, threshold=threshold)
+        weekly[wk] = {"tags": tags_norm, "scrobbles": int(week_scrobble_counts[wk])}
+
+        if progress:
+            try:
+                yr = int(wk[:4]); wknum = int(wk.split("-W")[1])
+                wk_start = date.fromisocalendar(yr, wknum, 1)
+                wk_end   = date.fromisocalendar(yr, wknum, 7)
+                top_items = list(tags_norm.items())[:top_k]
+                top_str = ", ".join(f"{t} {w*100:.1f}%" for t, w in top_items) if top_items else "no dominant tags"
+                print(f"✅ {wk}  {wk_start:%b %d}–{wk_end:%b %d}  —  {top_str}  |  scrobbles: {week_scrobble_counts[wk]}")
+            except Exception:
+                print(f"✅ {wk} — scrobbles: {week_scrobble_counts[wk]}")
+
+    if progress:
+        end_all = time.perf_counter()
+        print(f"⏱️ total processing time {end_all - start_all:.2f}s")
+
     return dict(sorted(weekly.items()))
+
+def export_weekly_tags(
+    weekly: dict[str, dict],
+    out_json: str = "tag_distributions_weekly_2025.json",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Save the nested weekly dict to JSON, plus:
+      - long CSV: week, tag, weight, scrobbles
+      - wide Parquet: index=week, columns=tag, values=weight
+    Returns (df_long, df_wide) for downstream analysis if you're running as a script.
+    """
+    # 0) JSON
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(weekly, f, ensure_ascii=False, indent=2)
+
+    # 1) Long tidy DF
+    rows = []
+    for week, payload in weekly.items():
+        sc = int(payload.get("scrobbles", 0))
+        for tag, weight in payload.get("tags", {}).items():
+            rows.append({"week": week, "tag": tag, "weight": float(weight), "scrobbles": sc})
+    df_long = pd.DataFrame(rows).sort_values(["week", "weight"], ascending=[True, False])
+
+    print(f"💾 Saved:\n  • {out_json}\n")
+    return df_long
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +749,10 @@ def main() -> None:
         json.dump(weekly, f, ensure_ascii=False, indent=2)
     print(f"✅ Wrote {len(weekly)} weekly distributions → tag_distributions_weekly_2025.json")
 
+    export_weekly_tags(
+        weekly,
+        out_json="tag_distributions_weekly_2025.json"
+    )
     tracks_df = scrobbles_to_df(scrobbles)
     # Thread(target=background_country_updater, daemon=True).start()
 
