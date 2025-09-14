@@ -1,19 +1,213 @@
-import requests
+# ——— Standard library ———
+import os
+import json
 import re
 import string
-import json
-from collections import Counter, defaultdict
-import pytz
 import time
-from datetime import datetime, timezone, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from collections import defaultdict, Counter
+from datetime import datetime, date, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+from threading import Thread
+
+# ——— Third-party ———
+import requests
+import pytz
 import dateutil.tz
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from threading import Thread
+# ==== FAST TAG FETCH WITH DISK CACHE + PARALLEL PREFETCH ===================
+import os, json, time
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+import tempfile
+from threading import Lock
+from pathlib import Path
+
+SESSION = requests.Session()
+
+# Toggle speed/accuracy: "track_album_artist" (default) or "artist_only" or "track_then_artist"
+TAG_MODE = os.getenv("TAG_MODE", "track_album_artist")
+
+# Rate limit (requests/second) for prefetch; tune if you hit 429s
+PREFETCH_RPS = int(os.getenv("PREFETCH_RPS", "4"))
+PREFETCH_WORKERS = int(os.getenv("PREFETCH_WORKERS", "8"))
+
+CACHE_DIR = "cache"
+TRACK_CACHE_PATH  = os.path.join(CACHE_DIR, "tags_track.json")
+ALBUM_CACHE_PATH  = os.path.join(CACHE_DIR, "tags_album.json")
+ARTIST_CACHE_PATH = os.path.join(CACHE_DIR, "tags_artist.json")
+
+def _load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def _save_json(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+_CACHE_LOCKS = {
+    TRACK_CACHE_PATH:  Lock(),
+    ALBUM_CACHE_PATH:  Lock(),
+    ARTIST_CACHE_PATH: Lock(),
+}
+
+def _save_json_atomic(path: str, obj: dict) -> None:
+    """Atomic write: unique temp in same dir, then os.replace."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=os.path.dirname(path),
+        prefix=os.path.basename(path) + ".",
+        suffix=".tmp",
+        delete=False,
+        encoding="utf-8",
+    ) as tf:
+        json.dump(obj, tf, ensure_ascii=False, indent=2)
+        tmp_path = tf.name
+    os.replace(tmp_path, path)
+
+def _write_cache(path: str, obj: dict) -> None:
+    """Thread-safe write for a given cache file."""
+    lock = _CACHE_LOCKS.get(path)
+    if lock is None:
+        # just in case someone refactors paths later
+        _CACHE_LOCKS[path] = Lock()
+        lock = _CACHE_LOCKS[path]
+    with lock:
+        _save_json_atomic(path, obj)
+def _norm(s): return (s or "").strip().lower()
+def _track_key(artist, album, track): return f"{_norm(artist)}\t{_norm(album)}\t{_norm(track)}"
+def _album_key(artist, album):       return f"{_norm(artist)}\t{_norm(album)}"
+def _artist_key(artist):             return _norm(artist)
+
+# Load caches once
+_track_cache  = _load_json(TRACK_CACHE_PATH)
+_album_cache  = _load_json(ALBUM_CACHE_PATH)
+_artist_cache = _load_json(ARTIST_CACHE_PATH)
+
+def _lfm_get(method, params):
+    url = "https://ws.audioscrobbler.com/2.0/"
+    p = {"method": method, "api_key": API_KEY, "format": "json", **params}
+    r = SESSION.get(url, params=p, timeout=12)
+    r.raise_for_status()
+    return r.json()
+
+def _parse_tags(d):
+    tags = d.get("toptags", {}).get("tag", [])
+    out = {}
+    for tg in sorted(tags, key=lambda z: int(z.get("count", 0)), reverse=True)[:3]:
+        name = tg.get("name")
+        if name:
+            out[name] = int(tg.get("count", 0))
+    return out
+
+def _fetch_track_tags(artist, track):
+    try:
+        return _parse_tags(_lfm_get("track.getTopTags", {"artist": artist, "track": track}))
+    except Exception:
+        return {}
+
+def _fetch_album_tags(artist, album):
+    try:
+        # include artist for better disambiguation
+        return _parse_tags(_lfm_get("album.getTopTags", {"artist": artist, "album": album}))
+    except Exception:
+        return {}
+
+def _fetch_artist_tags(artist):
+    try:
+        return _parse_tags(_lfm_get("artist.getTopTags", {"artist": artist}))
+    except Exception:
+        return {}
+
+def get_track_tags_fast(artist, album, track, mode=TAG_MODE):
+    """
+    Fast, cached tag lookup. Persists to disk so later runs are instant.
+    mode:
+      - "track_album_artist": try track -> album -> artist (most specific)
+      - "track_then_artist":  try track -> artist (skip album to halve calls)
+      - "artist_only":        only artist (fastest; 1 call/artist)
+    """
+    k_t = _track_key(artist, album, track)
+    if k_t in _track_cache:
+        return _track_cache[k_t]
+
+    if mode == "artist_only":
+        k_a = _artist_key(artist)
+        if k_a not in _artist_cache:
+            _artist_cache[k_a] = _fetch_artist_tags(artist)
+            _write_cache(ARTIST_CACHE_PATH, _artist_cache)
+        _track_cache[k_t] = _artist_cache[k_a]
+        _write_cache(TRACK_CACHE_PATH, _track_cache)
+        return _track_cache[k_t]
+
+    # try track
+    tags = _fetch_track_tags(artist, track)
+    if tags:
+        _track_cache[k_t] = tags
+        _write_cache(TRACK_CACHE_PATH, _track_cache)
+        return tags
+
+    # optional album hop (skip when mode == "track_then_artist")
+    if mode != "track_then_artist" and album:
+        k_alb = _album_key(artist, album)
+        if k_alb in _album_cache:
+            _track_cache[k_t] = _album_cache[k_alb]
+            _write_cache(TRACK_CACHE_PATH, _track_cache)
+            return _album_cache[k_alb]
+        tags = _fetch_album_tags(artist, album)
+        if tags:
+            _album_cache[k_alb] = tags
+            _write_cache(ALBUM_CACHE_PATH, _album_cache)
+            _track_cache[k_t] = tags
+            _write_cache(TRACK_CACHE_PATH, _track_cache)
+            return tags
+
+    # fallback artist
+    k_a = _artist_key(artist)
+    if k_a not in _artist_cache:
+        _artist_cache[k_a] = _fetch_artist_tags(artist)
+        _write_cache(ARTIST_CACHE_PATH, _artist_cache)
+    _track_cache[k_t] = _artist_cache[k_a]
+    _write_cache(TRACK_CACHE_PATH, _track_cache)
+    return _track_cache[k_t]
+
+def prefetch_tags_for_keys(track_keys, mode=TAG_MODE, rps=PREFETCH_RPS, workers=PREFETCH_WORKERS):
+    """
+    Prefetch tags for missing (artist, album, track) keys with parallelism + rate limit.
+    """
+    to_fetch = []
+    for (artist, album, track) in track_keys:
+        if _track_key(artist, album, track) not in _track_cache:
+            to_fetch.append((artist, album, track))
+    if not to_fetch:
+        return 0
+
+    def _do(triple):
+        a, al, t = triple
+        # Each call internally may do 1–3 HTTP requests depending on mode.
+        get_track_tags_fast(a, al, t, mode=mode)
+
+    i, n = 0, len(to_fetch)
+    while i < n:
+        batch = to_fetch[i:i + rps]  # ~rps requests/sec
+        with ThreadPoolExecutor(max_workers=min(workers, len(batch))) as ex:
+            list(ex.map(_do, batch))
+        i += len(batch)
+        if i < n:
+            time.sleep(1.05)  # gentle pacing
+    return len(to_fetch)
+
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -260,8 +454,6 @@ def session_summary(sessions):
         "average_session_length": sum(sess[-1]['timestamp'] - sess[0]['timestamp'] for sess in sessions) / len(sessions) / 60,
         "median_session_length": sorted([(sess[-1]['timestamp'] - sess[0]['timestamp']) / 60 for sess in sessions])[len(sessions)//2]
     }
-
-# TODO: Address UTC -> local time issue
 
 def most_played_songs(scrobbles):
     titles = [scrobble["track"] for scrobble in scrobbles]
@@ -718,6 +910,7 @@ def filtered_tag_scores(tracks_df, start_hour, end_hour, threshold=0.025):
 
     return final_tags
 
+LOCAL_TZ = pytz.timezone("America/New_York")
 
 @app.get("/country-summary")
 def get_country_summary():
@@ -742,52 +935,145 @@ def background_country_updater():
         time.sleep(1.5)
 
 
+@lru_cache(maxsize=20000)
+def get_cached_track_tags(artist, album, track):
+    # IMPORTANT: your get_track_tags signature is (artist, album, track)
+    return get_track_tags(artist, album, track) or {}
+
+def _dedupe_scrobbles(scrobbles):
+    seen = {}
+    for s in scrobbles:
+        key = (s.get("artist",""), s.get("track",""), s.get("album",""), int(s.get("timestamp",0)))
+        if key not in seen:
+            seen[key] = s
+    return sorted(seen.values(), key=lambda x: x["timestamp"])
+
+def update_scrobbles_file(json_path="scrobbles_2025.json", default_start="2025-01-01"):
+    # Load existing
+    existing = []
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+
+    # Decide fetch window in UTC (safe for API)
+    if existing:
+        last_ts = max(int(s["timestamp"]) for s in existing)
+        start_date = datetime.utcfromtimestamp(last_ts).strftime("%Y-%m-%d")
+    else:
+        start_date = default_start
+    end_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+    # Fetch & write
+    new_scrobbles = get_scrobbles_in_timeframe(start_date, end_date) if start_date <= end_date else []
+    combined = _dedupe_scrobbles(existing + new_scrobbles)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(combined, f, ensure_ascii=False, indent=2)
+    print(f"📝 Updated {json_path}: {len(existing)} → {len(combined)} scrobbles.")
+    return combined
+
+def _week_key_local(ts_utc_int):
+    """Return ISO week key like '2025-W23' using local time."""
+    dt_local = (
+        datetime.utcfromtimestamp(int(ts_utc_int))
+        .replace(tzinfo=pytz.UTC)
+        .astimezone(LOCAL_TZ)
+    )
+    iso_year, iso_week, _ = dt_local.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}", iso_year
+
+def _normalize_and_threshold(tag_totals, threshold=0.025):
+    total = sum(tag_totals.values())
+    if total <= 0:
+        return {}
+    normalized = {t: v/total for t, v in tag_totals.items()}
+    filtered = {t: w for t, w in normalized.items() if w >= threshold}
+    ssum = sum(filtered.values())
+    if ssum <= 0:
+        return {}
+    # sort high→low
+    return dict(sorted(((t, w/ssum) for t, w in filtered.items()), key=lambda kv: kv[1], reverse=True))
+
+from datetime import date  # at top of file if not already imported
+
+from datetime import date
+
+def compute_weekly_tag_distributions_from_scrobbles(
+    scrobbles, year_filter=2025, threshold=0.025, progress=True, top_k=3
+):
+    # 0) Gather unique tracks for this year and prefetch tags
+    unique_keys = set()
+    for s in scrobbles:
+        wk, iso_year = _week_key_local(s["timestamp"])
+        if iso_year == year_filter:
+            unique_keys.add((s.get("artist",""), s.get("album",""), s.get("track","")))
+    fetched = prefetch_tags_for_keys(unique_keys)
+    if progress:
+        print(f"⚡ Prefetched tags for {fetched} tracks (mode={TAG_MODE}).")
+
+    # 1) Count scrobbles per week and per (artist, album, track)
+    week_track_counts = defaultdict(Counter)
+    week_scrobble_counts = defaultdict(int)
+    for s in scrobbles:
+        wk, iso_year = _week_key_local(s["timestamp"])
+        if iso_year != year_filter:
+            continue
+        key = (s.get("artist",""), s.get("album",""), s.get("track",""))
+        week_track_counts[wk][key] += 1
+        week_scrobble_counts[wk] += 1
+
+    # 2) Accumulate totals with cached lookups
+    weekly = {}
+    for wk, counter in sorted(week_track_counts.items()):
+        tag_totals = defaultdict(float)
+        for (artist, album, track), count in counter.items():
+            weights = get_track_tags_fast(artist, album, track)  # FAST + persistent
+            for tag, w in weights.items():
+                tag_totals[tag] += float(w) * count
+
+        tags_norm = _normalize_and_threshold(tag_totals, threshold=threshold)
+        weekly[wk] = {"tags": tags_norm, "scrobbles": week_scrobble_counts[wk]}
+
+        if progress:
+            try:
+                yr = int(wk[:4]); wknum = int(wk.split("-W")[1])
+                wk_start = date.fromisocalendar(yr, wknum, 1)
+                wk_end   = date.fromisocalendar(yr, wknum, 7)
+                top_items = list(tags_norm.items())[:top_k]
+                top_str = ", ".join(f"{t} {w*100:.1f}%" for t, w in top_items) if top_items else "no dominant tags"
+                print(f"✅ {wk}  {wk_start:%b %d}–{wk_end:%b %d}  —  {top_str}  |  scrobbles: {week_scrobble_counts[wk]}", flush=True)
+            except Exception:
+                print(f"✅ {wk} — scrobbles: {week_scrobble_counts[wk]}", flush=True)
+
+    return weekly
+
 
 def main():
-    # with open("scrobbles_2025.json", "r", encoding="utf-8") as f:
-    #     scrobbles = json.load(f)
-
-    # with open("scrobbles_2025.json", "w", encoding="utf-8") as f:
-    #     json.dump(scrobbles, f, ensure_ascii=False, indent=2)
-    # start_date = "2025-06-06"
-    # end_date = "2025-06-12"
-
-    # scrobbles = get_scrobbles_in_timeframe(start_date, end_date)
-    # # print(f"Found {len(scrobbles)} scrobbles")
-
-    # session_starts, _ = identify_session_starts(scrobbles)
-
-    # sessions = split_into_sessions(scrobbles, inactivity_threshold_seconds=900)
-    # print(f"Total sessions found: {len(sessions)}")
-
-    # longest = max(
-    #     (sess[-1]['timestamp'] - sess[0]['timestamp'] + 900)
-    #     for sess in sessions
-    # )
-    # print(f"Longest session: {longest / 60:.1f} minutes")
-
-    # streak = longest_listening_streak(scrobbles)
-    # print(f"Longest streak: {streak['streak']} days from {streak['start_day']} to {streak['end_day']}")
-
-    # s_summary = session_summary(sessions)
-    # print(f"Total sessions: {s_summary['total_sessions']}")
-    # print(f"Average session length: {s_summary['average_session_length']:.1f} minutes")
-    # print(f"Median session length: {s_summary['median_session_length']:.1f} minutes")
-
-    #tracks_df = scrobbles_to_df(scrobbles)
-    # print(compute_burn_scores(tracks_df, window_days=15, early_windows=3, late_windows=3).sort_values(by='burn_score', ascending=False).head(10))
-    # print(f'Most Played Song: {most_played_songs(scrobbles)[:1]}')
-    # print(f'Most Played Artist: {most_played_artists(scrobbles)[:1]}')
-    # print(f'Most Played Album: {most_played_albums(scrobbles)[:1]}')
-
+    """
+    1) Update scrobbles_2025.json to current day (UTC).
+    2) Compute weekly tag distributions for ISO weeks in 2025 (local time).
+    3) Refresh tracks_df and start background country updater.
+    """
     global tracks_df
-    with open("scrobbles_2025.json", "r") as f:
-        scrobbles = json.load(f)
 
+    # 1) Update JSON
+    scrobbles = update_scrobbles_file("scrobbles_2025.json", default_start="2025-01-01")
+
+    # 2) Weekly tag distributions (kept in a separate JSON)
+    print("📊 Computing weekly tag distributions for 2025 (local ISO weeks)...")
+    weekly = compute_weekly_tag_distributions_from_scrobbles(scrobbles, threshold=0.025, year_filter=2025)
+
+    out_path = "tag_distributions_weekly_2025.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(weekly, f, ensure_ascii=False, indent=2)
+    print(f"✅ Wrote {len(weekly)} weekly distributions → {out_path}")
+
+    # 3) Refresh DataFrame and kick off country updater (optional but keeps your API consistent)
     tracks_df = scrobbles_to_df(scrobbles)
+    #Thread(target=background_country_updater, daemon=True).start()
+    #print("🚀 Background country updater started")
 
-    # Start the background thread
-    Thread(target=background_country_updater, daemon=True).start()
+if __name__ == "__main__":
+    main()
 
    
 @app.on_event("startup")
