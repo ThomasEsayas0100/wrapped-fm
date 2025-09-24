@@ -3546,5 +3546,29 @@
     "soul": 100,
     "latin": 25,
     "rnb": 4
+  },
+  "matata": {
+    "funk": 100,
+    "afrobeat": 89,
+    "kenya": 25
+  },
+  "otlo": {},
+  "statika": {
+    "ambient": 100
+  },
+  "the hails": {
+    "indie pop": 100,
+    "pop rock": 100,
+    "indie rock": 16
+  },
+  "lochhaven": {
+    "ambient": 100,
+    "instrumental": 100,
+    "United States": 66
+  },
+  "vano 3000": {
+    "indie": 100,
+    "Hip-Hop": 100,
+    "Lo-Fi": 66
   }
 }

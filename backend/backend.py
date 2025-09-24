@@ -519,14 +519,185 @@ def filter_track_df_by_date(tracks_df: pd.DataFrame, start_date, end_date) -> pd
     )
 
 
-def hour_pie_chart(scrobbles: list[dict]) -> dict[int, int]:
-    counts = Counter()
-    for s in scrobbles:
-        h = (
-            datetime.utcfromtimestamp(s["timestamp"]).replace(tzinfo=pytz.UTC).astimezone().hour
-        )
-        counts[h] += 1
-    return dict(counts)
+# ---------- Hour-of-day tag distributions ----------
+
+def compute_hourly_tag_distributions(
+    scrobbles: list[dict],
+    threshold: float = 0.025,
+    year_filter: int | None = None,
+    progress: bool = True,
+) -> dict[int, dict]:
+    """
+    Build per-hour (0..23, local time) tag distributions.
+    Reuses your tag cache and prefetch to stay fast.
+    Returns: { 0: {"tags": {...}, "scrobbles": N}, 1: {...}, ... }
+    """
+    df = pd.DataFrame(scrobbles)
+    if df.empty:
+        return {}
+
+    # Local hour and ISO year (for optional filter)
+    dt_local = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(LOCAL_TZ)
+    iso = dt_local.dt.isocalendar()
+    df["hour"] = dt_local.dt.hour
+    df["iso_year"] = iso["year"]
+
+    if year_filter is not None:
+        df = df[df["iso_year"] == year_filter]
+
+    # Unique track keys across the period and prefetch
+    unique_keys = set(zip(df["artist"], df["album"], df["track"]))
+    if progress:
+        print(f"🧩 hourly: found {len(unique_keys)} unique tracks to tag")
+    prefetch_tags_for_keys(unique_keys)
+    tag_cache = {key: get_track_tags_fast(*key) for key in unique_keys}
+
+    # Scrobble counts by (hour, track)
+    grouped = (
+        df.groupby(["hour", "artist", "album", "track"])
+          .size()
+          .reset_index(name="count")
+    )
+    scrobbles_by_hour = grouped.groupby("hour")["count"].sum().to_dict()
+
+    # Build a tag weight table for a vectorized merge
+    # rows: artist, album, track, tag, weight
+    tag_rows = []
+    for (artist, album, track), weights in tag_cache.items():
+        for tag, w in weights.items():
+            tag_rows.append((artist, album, track, tag, float(w)))
+    tags_df = pd.DataFrame(tag_rows, columns=["artist", "album", "track", "tag", "weight"])
+
+    if tags_df.empty:
+        # No tags found anywhere -> empty result
+        return {h: {"tags": {}, "scrobbles": scrobbles_by_hour.get(h, 0)} for h in range(24)}
+
+    # Join scrobble counts with tag weights; aggregate tag_totals per hour
+    merged = grouped.merge(tags_df, on=["artist", "album", "track"], how="left").fillna({"weight": 0.0})
+    merged["contrib"] = merged["count"] * merged["weight"]
+
+    hourly = {}
+    for h, sub in merged.groupby("hour"):
+        totals = sub.groupby("tag")["contrib"].sum().to_dict()
+        tags_norm = _normalize_and_threshold(totals, threshold=threshold)
+        hourly[h] = {"tags": tags_norm, "scrobbles": int(scrobbles_by_hour.get(h, 0))}
+        if progress:
+            top_items = list(tags_norm.items())[:5]
+            top_str = ", ".join(f"{t} {w*100:.1f}%" for t, w in top_items) if top_items else "—"
+            print(f"🕒 {h:02d}: scrobbles={hourly[h]['scrobbles']}, top: {top_str}")
+
+    # Ensure every hour appears, even if empty
+    for h in range(24):
+        hourly.setdefault(h, {"tags": {}, "scrobbles": int(scrobbles_by_hour.get(h, 0))})
+
+    return dict(sorted(hourly.items()))
+
+def export_hourly_tags(
+    hourly: dict[int, dict],
+    out_json: str = "tag_distributions_hourly.json",
+    out_csv_long: str = "tag_distributions_hourly_long.csv",
+    out_parquet_wide: str = "tag_distributions_hourly_wide.parquet",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Save hourly dict as:
+      - JSON (nested)
+      - long CSV: hour, tag, percent, scrobbles
+      - wide Parquet: index=hour, columns=tag, values=percent
+    Returns (df_long, df_wide).
+    """
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(hourly, f, ensure_ascii=False, indent=2)
+
+    rows = []
+    for h, payload in hourly.items():
+        sc = int(payload.get("scrobbles", 0))
+        for tag, w in payload.get("tags", {}).items():
+            rows.append({"hour": int(h), "tag": tag, "percent": float(w), "scrobbles": sc})
+    df_long = pd.DataFrame(rows).sort_values(["hour", "percent"], ascending=[True, False])
+    df_wide = df_long.pivot(index="hour", columns="tag", values="percent").fillna(0.0).sort_index()
+
+    df_long.to_csv(out_csv_long, index=False)
+    df_wide.to_parquet(out_parquet_wide)
+
+    print(f"💾 Saved hourly:\n  • {out_json}\n  • {out_csv_long}\n  • {out_parquet_wide}")
+    return df_long, df_wide
+
+def export_weekly_tags(
+    weekly: dict[str, dict],
+    out_json: str = "tag_distributions_weekly_2025.json",
+    out_csv_long: str = "tag_distributions_weekly_2025_long.csv",      # ignored
+    out_parquet_wide: str = "tag_distributions_weekly_2025_wide.parquet"  # ignored
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Save weekly dict to JSON only (CSV/Parquet disabled).
+    Still returns (df_long, df_wide) in memory for optional downstream use.
+    """
+    # JSON
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(weekly, f, ensure_ascii=False, indent=2)
+
+    # In-memory long & wide (not persisted to disk)
+    rows = []
+    for week, payload in weekly.items():
+        sc = int(payload.get("scrobbles", 0))
+        for tag, w in payload.get("tags", {}).items():
+            rows.append({"week": week, "tag": tag, "weight": float(w), "scrobbles": sc})
+    df_long = pd.DataFrame(rows).sort_values(["week", "weight"], ascending=[True, False])
+    df_wide = df_long.pivot(index="week", columns="tag", values="weight").fillna(0.0).sort_index()
+
+    print(f"💾 Saved JSON: {out_json}  (CSV/Parquet disabled)")
+    return df_long, df_wide
+
+# ---------- Affinity / lift vs overall ----------
+
+def compute_hourly_tag_lift(hourly: dict[int, dict]) -> pd.DataFrame:
+    """
+    Build an hour×tag matrix of 'lift' = p(tag|hour) / p(tag overall).
+    Uses scrobble-weighted overall distribution.
+    Returns a DataFrame with index=hour, columns=tag.
+    """
+    # hour-level
+    rows = []
+    total_scrobbles = sum(int(v.get("scrobbles", 0)) for v in hourly.values()) or 1
+    for h, payload in hourly.items():
+        sc = int(payload.get("scrobbles", 0))
+        for tag, p in payload.get("tags", {}).items():
+            rows.append({"hour": int(h), "tag": tag, "p_hour": float(p), "sc": sc})
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+
+    # overall p(tag) weighted by scrobbles
+    tag_overall = (
+        df.assign(weighted=lambda x: x["p_hour"] * x["sc"])
+          .groupby("tag")["weighted"].sum()
+          .div(total_scrobbles)
+    )  # Series tag -> p(tag)
+
+    # join back and compute lift
+    lift = (
+        df.merge(tag_overall.rename("p_overall"), on="tag", how="left")
+          .assign(lift=lambda x: np.where(x["p_overall"] > 0, x["p_hour"] / x["p_overall"], np.nan))
+          .pivot(index="hour", columns="tag", values="lift")
+          .sort_index()
+    ).fillna(0.0)
+
+    return lift
+
+
+def print_hourly_top_affinities(lift_df: pd.DataFrame, top_k: int = 5) -> None:
+    """
+    Pretty-print top tags per hour by lift (affinity).
+    """
+    if lift_df.empty:
+        print("No lift matrix to display.")
+        return
+    for h in lift_df.index:
+        top = lift_df.loc[h].sort_values(ascending=False).head(top_k)
+        pairs = ", ".join(f"{t}×{v:.2f}" for t, v in top.items())
+        print(f"🕒 {h:02d}: {pairs}")
+
 
 
 def filtered_tag_scores_by_date(tracks_df: pd.DataFrame, start, end, threshold: float = 0.025) -> dict[str, float]:
@@ -635,6 +806,87 @@ def _normalize_and_threshold(tag_totals: dict[str, float], threshold: float = 0.
         return {}
     return dict(sorted(((t, w / ssum) for t, w in filtered.items()), key=lambda kv: kv[1], reverse=True))
 
+def compute_daily_tag_distributions_from_scrobbles(
+    scrobbles: list[dict],
+    year_filter: int = 2025,
+    threshold: float = 0.025,
+    progress: bool = True,
+    top_k: int = 3,
+) -> dict[str, dict]:
+    """
+    Daily tag distributions (YYYY-MM-DD keys). Mirrors weekly structure:
+    { "2025-01-03": {"tags": {...}, "scrobbles": N}, ... }
+    """
+    start_all = time.perf_counter()
+
+    df = pd.DataFrame(scrobbles)
+    if df.empty:
+        return {}
+
+    # Localize and derive date + iso_year
+    dt_local = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(LOCAL_TZ)
+    iso = dt_local.dt.isocalendar()
+    df["iso_year"] = iso["year"]
+    df["date"] = dt_local.dt.date
+
+    # Year filter
+    df_year = df[df["iso_year"] == year_filter]
+    if df_year.empty:
+        if progress:
+            print(f"No scrobbles for iso_year={year_filter}.")
+        return {}
+
+    # 0) Unique tracks & prefetch
+    unique_keys = set(zip(df_year["artist"], df_year["album"], df_year["track"]))
+    gather_done = time.perf_counter()
+    if progress:
+        print(f"⏱️ gathered {len(unique_keys)} unique tracks in {gather_done - start_all:.2f}s")
+
+    fetched = prefetch_tags_for_keys(unique_keys)
+    prefetch_done = time.perf_counter()
+    if progress:
+        print(f"⚡ Prefetched tags for {fetched} tracks (mode={TAG_MODE}).")
+        print(f"⏱️ prefetch completed in {prefetch_done - gather_done:.2f}s")
+
+    # Local tag cache for O(1) lookups
+    tag_cache = {key: get_track_tags_fast(*key) for key in unique_keys}
+
+    # 1) Count scrobbles per (date, track)
+    grouped = (
+        df_year.groupby(["date", "artist", "album", "track"])
+               .size()
+               .reset_index(name="count")
+    )
+    day_scrobble_counts = grouped.groupby("date")["count"].sum().to_dict()
+    count_done = time.perf_counter()
+    if progress:
+        total_scrobbles = int(sum(day_scrobble_counts.values()))
+        print(f"⏱️ counted {total_scrobbles} scrobbles in {count_done - prefetch_done:.2f}s")
+
+    # 2) Accumulate totals -> normalize + threshold per day
+    daily: dict[str, dict] = {}
+    for day, sub in grouped.groupby("date"):
+        tag_totals = defaultdict(float)
+        for _, row in sub.iterrows():
+            weights = tag_cache[(row["artist"], row["album"], row["track"])]
+            for tag, w in weights.items():
+                tag_totals[tag] += float(w) * row["count"]
+
+        tags_norm = _normalize_and_threshold(tag_totals, threshold=threshold)
+        day_key = day.isoformat()  # <- JSON-friendly key
+        daily[day_key] = {"tags": tags_norm, "scrobbles": int(day_scrobble_counts[day])}
+
+        if progress:
+            top_items = list(tags_norm.items())[:top_k]
+            top_str = ", ".join(f"{t} {w*100:.1f}%" for t, w in top_items) if top_items else "no dominant tags"
+            print(f"✅ {day:%b %d}  —  {top_str}  |  scrobbles: {day_scrobble_counts[day]}")
+
+    if progress:
+        end_all = time.perf_counter()
+        print(f"⏱️ total processing time {end_all - start_all:.2f}s")
+
+    return dict(sorted(daily.items()))
+
 
 def compute_weekly_tag_distributions_from_scrobbles(
     scrobbles: list[dict], year_filter: int = 2025, threshold: float = 0.025, progress: bool = True, top_k: int = 5
@@ -708,6 +960,27 @@ def compute_weekly_tag_distributions_from_scrobbles(
 
     return dict(sorted(weekly.items()))
 
+def export_daily_tags(
+    daily: dict[str, dict],
+    out_json: str = "tag_distributions_daily_2025.json",
+) -> pd.DataFrame:
+    """
+    Save daily dict to JSON and return a long DataFrame (in-memory):
+      columns: day, tag, weight, scrobbles
+    """
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(daily, f, ensure_ascii=False, indent=2)
+
+    rows = []
+    for day, payload in daily.items():
+        sc = int(payload.get("scrobbles", 0))
+        for tag, weight in payload.get("tags", {}).items():
+            rows.append({"day": day, "tag": tag, "weight": float(weight), "scrobbles": sc})
+    df_long = pd.DataFrame(rows).sort_values(["day", "weight"], ascending=[True, False])
+
+    print(f"💾 Saved:\n  • {out_json}\n")
+    return df_long
+
 def export_weekly_tags(
     weekly: dict[str, dict],
     out_json: str = "tag_distributions_weekly_2025.json",
@@ -733,6 +1006,20 @@ def export_weekly_tags(
     print(f"💾 Saved:\n  • {out_json}\n")
     return df_long
 
+def tag_seasonality(df, tag, freq="M"):
+    sub = df[df["tag"].str.lower()==tag.lower()]
+    ts  = sub.set_index("day")["weight"].resample(freq).mean().fillna(0.0)
+    return ts  # plot or compare months
+
+def weekday_profile(df):
+    g = (df.assign(weekday=lambda x: x["day"].dt.day_name())
+           .groupby(["weekday","tag"])["weight"].mean()
+           .reset_index())
+    # top tags by weekday
+    return g.sort_values(["weekday","weight"], ascending=[True, False]).groupby("weekday").head(5)
+
+weekday_top = weekday_profile(df)
+
 
 # ---------------------------------------------------------------------------
 # Main script & FastAPI startup
@@ -749,12 +1036,25 @@ def main() -> None:
         json.dump(weekly, f, ensure_ascii=False, indent=2)
     print(f"✅ Wrote {len(weekly)} weekly distributions → tag_distributions_weekly_2025.json")
 
-    export_weekly_tags(
-        weekly,
-        out_json="tag_distributions_weekly_2025.json"
+    export_weekly_tags(weekly, out_json="tag_distributions_weekly_2025.json")
+
+    # (Optional) Hour-of-day distributions, if you want lift later
+    # hourly = compute_hourly_tag_distributions(scrobbles, threshold=0.025, year_filter=2025, progress=True)
+    # export_hourly_tags(hourly)
+
+    print("📊 Computing daily tag distributions for 2025...")
+    daily = compute_daily_tag_distributions_from_scrobbles(
+        scrobbles, threshold=0.025, year_filter=2025, progress=True
     )
+    export_daily_tags(daily, out_json="tag_distributions_daily_2025.json")
+
+    # If you computed `hourly` above, you can uncomment these:
+    # lift_df = compute_hourly_tag_lift(hourly)
+    # print_hourly_top_affinities(lift_df, top_k=1)
+
     tracks_df = scrobbles_to_df(scrobbles)
     # Thread(target=background_country_updater, daemon=True).start()
+
 
 
 if __name__ == "__main__":

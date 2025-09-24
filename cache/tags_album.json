@@ -1695,5 +1695,37 @@
   "tyler, the creator\twolf + instrumentals": {
     "NOT nu metal": 100,
     "instrumental": 100
+  },
+  "mogwai\tten rapid": {
+    "post-rock": 100,
+    "1997": 25,
+    "post rock": 7
+  },
+  "men i trust\tnorton commander (all we need)": {
+    "own": 100,
+    "digital": 100
+  },
+  "sigur rós\tágætis byrjun": {
+    "ambient": 100,
+    "icelandic": 47,
+    "favourite albums": 13
+  },
+  "nine inch nails\tghosts i-iv": {
+    "ambient": 100,
+    "instrumental": 91,
+    "experimental": 51
+  },
+  "roosevelt\telliot": {
+    "4": 100
+  },
+  "tenor saw\ttenor saw meets nitty gritty": {
+    "jamaica": 100,
+    "cool": 100,
+    "dance hall": 66
+  },
+  "glass beach\tthe first glass beach album": {
+    "indie rock": 100,
+    "art rock": 68,
+    "indietronica": 27
   }
 }
