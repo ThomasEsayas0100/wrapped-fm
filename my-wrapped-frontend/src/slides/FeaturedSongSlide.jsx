@@ -11,21 +11,71 @@ const defaultData = {
     "https://cdn.pixabay.com/download/audio/2022/03/15/audio_3b0e4b2d55.mp3?filename=disco-110134.mp3",
 };
 
-function getYouTubeEmbedUrl(url) {
+function extractYouTubeVideoId(url) {
   if (!url) return null;
 
   const patterns = [
-    /(?:v=|\/v\/|youtu\.be\/|embed\/)([A-Za-z0-9_-]{11})/, // common formats
+    /(?:v=|\bv\/|youtu\.be\/|embed\/)([A-Za-z0-9_-]{11})/,
   ];
 
   for (const pattern of patterns) {
     const match = url.match(pattern);
     if (match && match[1]) {
-      return `https://www.youtube.com/embed/${match[1]}?autoplay=1&controls=0&playsinline=1`;
+      return match[1];
     }
   }
 
   return null;
+}
+
+function getYouTubeEmbedUrl(url) {
+  const videoId = extractYouTubeVideoId(url);
+  if (!videoId) return null;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const params = new URLSearchParams({
+    autoplay: "1",
+    controls: "0",
+    playsinline: "1",
+    enablejsapi: "1",
+    modestbranding: "1",
+  });
+  if (origin) params.set("origin", origin);
+  return `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
+}
+
+async function resolveYouTubeAudioStream(videoId, { signal } = {}) {
+  if (!videoId) return null;
+
+  const controller = signal ? undefined : new AbortController();
+  const finalSignal = signal ?? controller?.signal;
+
+  const endpoint = `https://piped.video/api/v1/streams/${videoId}`;
+
+  const response = await fetch(endpoint, { signal: finalSignal, headers: { Accept: "application/json" } });
+  if (!response.ok) {
+    throw new Error(`YouTube audio stream request failed with ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const audioStreams = Array.isArray(payload?.audioStreams) ? payload.audioStreams : [];
+
+  if (!audioStreams.length) {
+    throw new Error("No audio streams available for YouTube source");
+  }
+
+  const sorted = [...audioStreams].sort((a, b) => {
+    const bitrateA = typeof a.bitrate === "number" ? a.bitrate : parseInt(a.bitrate ?? "0", 10) || 0;
+    const bitrateB = typeof b.bitrate === "number" ? b.bitrate : parseInt(b.bitrate ?? "0", 10) || 0;
+    return bitrateB - bitrateA;
+  });
+
+  for (const stream of sorted) {
+    if (stream?.url) {
+      return stream.url;
+    }
+  }
+
+  throw new Error("Unable to resolve playable YouTube audio stream");
 }
 
 function clamp(n, lo = 0, hi = 1) {
@@ -99,7 +149,11 @@ function generateSyntheticLevels(count, now, speed = 0.0026) {
   return levels;
 }
 
-function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange }) {
+function useAudioSpectrum(
+  audioRef,
+  isActive,
+  { lowBars, highBars, onModeChange, sourceLabel, sourceVersion }
+) {
   const [lowLevels, setLowLevels] = useState(() => new Array(lowBars).fill(0));
   const [highLevels, setHighLevels] = useState(() => new Array(highBars).fill(0));
 
@@ -125,6 +179,10 @@ function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange 
       audioEl.crossOrigin = "anonymous";
     }
   }, [audioRef]);
+
+  useEffect(() => {
+    setupAttemptedRef.current = false;
+  }, [sourceVersion]);
 
   useEffect(() => {
     let raf = 0;
@@ -166,7 +224,7 @@ function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange 
         }
 
         fallbackRef.current = false;
-        updateMode("audio");
+        updateMode(sourceLabel ? `audio:${sourceLabel}` : "audio");
       } catch (error) {
         console.warn("Falling back to synthetic equalizer", error);
         fallbackRef.current = true;
@@ -248,7 +306,7 @@ function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange 
       mounted = false;
       cancelAnimationFrame(raf);
     };
-  }, [audioRef, isActive, lowBars, highBars, onModeChange]);
+    }, [audioRef, isActive, lowBars, highBars, onModeChange, sourceLabel]);
 
   return useMemo(
     () => ({
@@ -363,13 +421,95 @@ export default function FeaturedSongSlide({ data = defaultData }) {
   const [analysisMode, setAnalysisMode] = useState("idle");
   const previewAudioRef = useRef(null);
 
+  const [audioSource, setAudioSource] = useState(() => ({
+    url: data.previewAudioUrl ?? null,
+    label: data.previewAudioUrl ? "preview" : "none",
+    status: data.previewAudioUrl ? "ready" : "idle",
+  }));
+
+  useEffect(() => {
+    let cancelled = false;
+    const previewUrl = data.previewAudioUrl?.trim();
+    if (previewUrl) {
+      setAudioSource({ url: previewUrl, label: "preview", status: "ready" });
+      return undefined;
+    }
+
+    const videoId = extractYouTubeVideoId(data.youtubeUrl);
+    if (!videoId) {
+      setAudioSource({ url: null, label: "none", status: "idle" });
+      return undefined;
+    }
+
+    setAudioSource({ url: null, label: "youtube", status: "loading" });
+
+    const controller = new AbortController();
+
+    async function load() {
+      try {
+        const streamUrl = await resolveYouTubeAudioStream(videoId, {
+          signal: controller.signal,
+        });
+        if (!cancelled) {
+          setAudioSource({ url: streamUrl, label: "youtube", status: "ready" });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("Unable to load YouTube audio stream", error);
+          setAudioSource({ url: null, label: "youtube", status: "error" });
+        }
+      }
+    }
+
+    void load();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [data.previewAudioUrl, data.youtubeUrl]);
+
   const embedUrl = isPlaying ? getYouTubeEmbedUrl(data.youtubeUrl) : null;
 
   const { lowLevels, highLevels } = useAudioSpectrum(previewAudioRef, isPlaying, {
     lowBars: 48,
     highBars: 48,
     onModeChange: setAnalysisMode,
+    sourceLabel: audioSource.label && audioSource.label !== "none" ? audioSource.label : null,
+    sourceVersion: audioSource.url ?? audioSource.status,
   });
+
+  const analysisMessage = useMemo(() => {
+    if (analysisMode === "audio") {
+      return "Visualizer synced to audio source.";
+    }
+
+    if (typeof analysisMode === "string" && analysisMode.startsWith("audio:")) {
+      const [, label] = analysisMode.split(":");
+      if (label === "youtube") {
+        return "Visualizer synced to YouTube audio stream.";
+      }
+      if (label === "preview") {
+        return "Visualizer synced to preview audio clip.";
+      }
+    }
+
+    if (analysisMode === "synthetic") {
+      if (audioSource.status === "loading") {
+        return "Fetching audio stream... equalizer running in ambient mode.";
+      }
+      if (audioSource.status === "error" && audioSource.label === "youtube") {
+        return "Visualizer in ambient mode — unable to access YouTube audio.";
+      }
+      return "Visualizer running in ambient mode.";
+    }
+
+    if (audioSource.status === "loading") {
+      return "Fetching audio stream...";
+    }
+
+    return null;
+  }, [analysisMode, audioSource.status, audioSource.label]);
 
   useEffect(() => {
     const audio = previewAudioRef.current;
@@ -380,6 +520,37 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     audio.preload = "auto";
     audio.playsInline = true;
   }, []);
+
+  useEffect(() => {
+    const audio = previewAudioRef.current;
+    if (!audio) return;
+
+    if (audioSource.url) {
+      if (audio.src !== audioSource.url) {
+        audio.src = audioSource.url;
+        audio.load();
+      }
+    } else if (audio.src) {
+      audio.removeAttribute("src");
+      audio.load();
+    }
+  }, [audioSource.url]);
+
+  useEffect(() => {
+    async function playIfReady() {
+      const audio = previewAudioRef.current;
+      if (!audio || !isPlaying) return;
+      if (!audioSource.url || audioSource.status !== "ready") return;
+
+      try {
+        await audio.play();
+      } catch (error) {
+        console.warn("Autoplay for analysis track blocked", error);
+      }
+    }
+
+    void playIfReady();
+  }, [audioSource.status, audioSource.url, isPlaying]);
 
   async function handleTogglePlayback() {
     if (isPlaying) {
@@ -447,21 +618,21 @@ export default function FeaturedSongSlide({ data = defaultData }) {
                 key={embedUrl}
                 src={embedUrl}
                 title="Top song audio player"
-                allow="autoplay"
+                allow="autoplay; encrypted-media"
                 aria-hidden="true"
                 tabIndex={-1}
                 className="absolute h-px w-px overflow-hidden"
                 style={{ clip: "rect(0 0 0 0)" }}
               />
             )}
-            {analysisMode === "synthetic" && (
-              <p className="text-xs text-white/60">Visualizer running in ambient mode.</p>
-            )}
+            {analysisMessage ? (
+              <p className="text-xs text-white/60 text-center max-w-sm">{analysisMessage}</p>
+            ) : null}
           </div>
         ) : null}
       </div>
 
-      {data.previewAudioUrl ? <audio ref={previewAudioRef} src={data.previewAudioUrl} /> : <audio ref={previewAudioRef} />}
+      <audio ref={previewAudioRef} />
     </div>
   );
 }
