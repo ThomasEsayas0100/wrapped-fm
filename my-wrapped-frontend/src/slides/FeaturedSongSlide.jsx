@@ -1,10 +1,30 @@
+import { useState } from "react";
+
 const defaultData = {
   title: "Get Lucky",
   artist: "Daft Punk",
   album: "Random Access Memories",
   albumArtUrl:
     "https://upload.wikimedia.org/wikipedia/en/a/a7/Random_Access_Memories.jpg",
+  youtubeUrl: "https://www.youtube.com/watch?v=5NV6Rdv1a3I",
 };
+
+function getYouTubeEmbedUrl(url) {
+  if (!url) return null;
+
+  const patterns = [
+    /(?:v=|\/v\/|youtu\.be\/|embed\/)([A-Za-z0-9_-]{11})/, // common formats
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      return `https://www.youtube.com/embed/${match[1]}?autoplay=1&controls=0&playsinline=1`;
+    }
+  }
+
+  return null;
+}
 
 function DecorativeRibbon({ side }) {
   const isLeft = side === "left";
@@ -32,6 +52,9 @@ function DecorativeRibbon({ side }) {
 }
 
 export default function FeaturedSongSlide({ data = defaultData }) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const embedUrl = isPlaying ? getYouTubeEmbedUrl(data.youtubeUrl) : null;
+
   return (
     <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#070c1f] px-6 py-16 text-white">
       <DecorativeRibbon side="left" />
@@ -62,6 +85,31 @@ export default function FeaturedSongSlide({ data = defaultData }) {
             </p>
           </div>
         </div>
+
+        {data.youtubeUrl ? (
+          <div className="flex flex-col items-center gap-4 text-sm text-white/80">
+            <button
+              type="button"
+              onClick={() => setIsPlaying((prev) => !prev)}
+              className="rounded-full bg-white/10 px-6 py-2 font-medium tracking-wide transition hover:bg-white/20"
+            >
+              {isPlaying ? "Stop playback" : "Play track"}
+            </button>
+
+            {embedUrl && (
+              <iframe
+                key={embedUrl}
+                src={embedUrl}
+                title="Top song audio player"
+                allow="autoplay"
+                aria-hidden="true"
+                tabIndex={-1}
+                className="absolute h-px w-px overflow-hidden"
+                style={{ clip: "rect(0 0 0 0)" }}
+              />
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
   );
