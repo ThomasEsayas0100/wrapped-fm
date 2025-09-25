@@ -85,14 +85,14 @@ function smoothLevels(previous, next, inertia = 0.65) {
   return hasChanged ? result : previous;
 }
 
-function generateSyntheticLevels(count, now, speed = 0.0028) {
+function generateSyntheticLevels(count, now, speed = 0.0026) {
   const levels = [];
 
   for (let i = 0; i < count; i += 1) {
-    const phase = i * 0.85;
-    const base = 0.35 + Math.sin(now * speed + phase) * 0.25;
-    const accent = Math.sin(now * speed * 1.7 + phase * 1.8) * 0.18;
-    const wobble = Math.sin(now * speed * 0.4 + phase * 2.6) * 0.12;
+    const phase = i * 0.75;
+    const base = 0.28 + Math.sin(now * speed + phase) * 0.22;
+    const accent = Math.sin(now * speed * 1.45 + phase * 1.6) * 0.16;
+    const wobble = Math.sin(now * speed * 0.35 + phase * 2.2) * 0.12;
     levels.push(clamp(base + accent + wobble));
   }
 
@@ -259,41 +259,101 @@ function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange 
   );
 }
 
-function EqualizerSide({ side, levels }) {
-  const isLeft = side === "left";
+function EqualizerRibbon({ side, levels }) {
+  const canvasRef = useRef(null);
+  const latestLevelsRef = useRef(levels);
+  latestLevelsRef.current = levels;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return undefined;
+
+    let animationFrame;
+
+    function draw() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+
+      if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+
+      const ribbonLevels = latestLevelsRef.current;
+      if (!ribbonLevels || ribbonLevels.length < 2) {
+        animationFrame = requestAnimationFrame(draw);
+        return;
+      }
+
+      const width = rect.width;
+      const height = rect.height;
+      const outerX = side === "left" ? width : 0;
+      const direction = side === "left" ? -1 : 1;
+      const verticalPadding = height * 0.12;
+      const baseThickness = width * 0.22;
+      const liveAmplitude = width * 0.58;
+
+      const gradient = ctx.createLinearGradient(
+        side === "left" ? width : 0,
+        0,
+        side === "left" ? 0 : width,
+        height
+      );
+      gradient.addColorStop(0, "rgba(59, 130, 246, 0.9)");
+      gradient.addColorStop(0.4, "rgba(14, 165, 233, 0.75)");
+      gradient.addColorStop(1, "rgba(125, 211, 252, 0.35)");
+
+      ctx.beginPath();
+      ctx.moveTo(outerX, -verticalPadding);
+
+      const step = (height + verticalPadding * 2) / (ribbonLevels.length - 1);
+      let previousInnerX = outerX;
+      let previousY = -verticalPadding;
+
+      for (let i = 0; i < ribbonLevels.length; i += 1) {
+        const level = ribbonLevels[i];
+        const thickness = baseThickness + level * liveAmplitude;
+        const innerX = outerX + direction * thickness;
+        const y = -verticalPadding + step * i;
+
+        const controlX = previousInnerX + (innerX - previousInnerX) * 0.68;
+        const controlY = previousY + step * 0.68;
+
+        ctx.quadraticCurveTo(controlX, controlY, innerX, y);
+
+        previousInnerX = innerX;
+        previousY = y;
+      }
+
+      ctx.lineTo(outerX, height + verticalPadding);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      animationFrame = requestAnimationFrame(draw);
+    }
+
+    animationFrame = requestAnimationFrame(draw);
+
+    return () => cancelAnimationFrame(animationFrame);
+  }, [side]);
 
   return (
     <div
-      className={`pointer-events-none absolute inset-y-[-10%] ${
-        isLeft ? "left-[-10%] justify-start" : "right-[-10%] justify-end"
-      } flex w-[26vw] min-w-[200px]`}
+      className={`pointer-events-none absolute inset-y-[-14%] ${
+        side === "left" ? "left-[-10%]" : "right-[-10%]"
+      } w-[clamp(240px,25vw,340px)]`}
     >
-      <div className="relative flex h-full w-full items-center justify-center">
-        <div
-          className={`absolute inset-0 ${
-            isLeft ? "bg-gradient-to-tr" : "bg-gradient-to-tl"
-          } from-sky-500/18 via-cyan-400/8 to-transparent blur-3xl`}
-        />
-        <div
-          className={`relative z-10 flex h-[78%] items-end gap-[clamp(0.45rem,1vw,0.85rem)] ${
-            isLeft ? "" : "flex-row-reverse"
-          }`}
-        >
-          {levels.map((value, index) => (
-            <div key={index} className="flex-1">
-              <div className="relative mx-auto flex h-full w-[clamp(0.55rem,1.15vw,1rem)] overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="absolute bottom-0 left-0 right-0 origin-bottom rounded-full bg-gradient-to-t from-sky-500 via-cyan-400 to-sky-200 shadow-[0_0_24px_rgba(56,189,248,0.35)]"
-                  style={{
-                    transform: `scaleY(${0.15 + value * 0.85})`,
-                    transition: "transform 0.1s ease-out",
-                  }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      <canvas ref={canvasRef} className="h-full w-full" />
+      <div
+        className={`absolute inset-0 ${
+          side === "left" ? "bg-gradient-to-tr" : "bg-gradient-to-tl"
+        } from-sky-500/25 via-cyan-400/10 to-transparent blur-3xl mix-blend-screen`}
+      />
     </div>
   );
 }
@@ -306,8 +366,8 @@ export default function FeaturedSongSlide({ data = defaultData }) {
   const embedUrl = isPlaying ? getYouTubeEmbedUrl(data.youtubeUrl) : null;
 
   const { lowLevels, highLevels } = useAudioSpectrum(previewAudioRef, isPlaying, {
-    lowBars: 9,
-    highBars: 9,
+    lowBars: 48,
+    highBars: 48,
     onModeChange: setAnalysisMode,
   });
 
@@ -344,9 +404,9 @@ export default function FeaturedSongSlide({ data = defaultData }) {
   }
 
   return (
-    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#070c1f] px-6 py-16 text-white">
-      <EqualizerSide side="left" levels={lowLevels} />
-      <EqualizerSide side="right" levels={highLevels} />
+    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-gradient-to-b from-[#050816] via-[#070c1f] to-[#050816] px-6 py-16 text-white">
+      <EqualizerRibbon side="left" levels={lowLevels} />
+      <EqualizerRibbon side="right" levels={highLevels} />
 
       <div className="relative z-10 flex max-w-3xl flex-col items-center gap-12 text-center">
         <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">
@@ -357,7 +417,7 @@ export default function FeaturedSongSlide({ data = defaultData }) {
         </h1>
 
         <div className="flex flex-col items-center gap-8">
-          <div className="rounded-[2.5rem] border-[14px] border-[#191f3c] bg-[#0c1430] p-4 shadow-[0_25px_65px_rgba(10,12,35,0.55)]">
+          <div className="rounded-[2.5rem] border-[14px] border-[#151b35] bg-[#0c1430] p-4 shadow-[0_32px_90px_rgba(7,11,28,0.65)]">
             <img
               src={data.albumArtUrl}
               alt={data.album ? `${data.title} album cover for ${data.album}` : `${data.title} album cover`}
@@ -365,17 +425,15 @@ export default function FeaturedSongSlide({ data = defaultData }) {
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             <p className="text-4xl font-bold md:text-5xl">{data.title}</p>
             <p className="text-xl font-medium text-white/90 md:text-2xl">{data.artist}</p>
-            <p className="text-sm uppercase tracking-[0.35em] text-white/60 md:text-base">
-              {data.album}
-            </p>
+            <p className="text-sm uppercase tracking-[0.4em] text-white/55 md:text-base">{data.album}</p>
           </div>
         </div>
 
         {data.youtubeUrl ? (
-          <div className="flex flex-col items-center gap-4 text-sm text-white/80">
+          <div className="flex flex-col items-center gap-3 text-sm text-white/80">
             <button
               type="button"
               onClick={handleTogglePlayback}
@@ -397,19 +455,13 @@ export default function FeaturedSongSlide({ data = defaultData }) {
               />
             )}
             {analysisMode === "synthetic" && (
-              <p className="text-xs text-white/60">
-                Visualizer running in ambient mode.
-              </p>
+              <p className="text-xs text-white/60">Visualizer running in ambient mode.</p>
             )}
           </div>
         ) : null}
       </div>
 
-      {data.previewAudioUrl ? (
-        <audio ref={previewAudioRef} src={data.previewAudioUrl} />
-      ) : (
-        <audio ref={previewAudioRef} />
-      )}
+      {data.previewAudioUrl ? <audio ref={previewAudioRef} src={data.previewAudioUrl} /> : <audio ref={previewAudioRef} />}
     </div>
   );
 }
