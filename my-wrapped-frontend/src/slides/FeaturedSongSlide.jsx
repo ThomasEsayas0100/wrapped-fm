@@ -130,15 +130,15 @@ function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange 
     let raf = 0;
     let mounted = true;
 
-    async function ensureAnalyser() {
-      const audioEl = audioRef.current;
-      if (!isActive || !audioEl || !audioEl.src) {
-        fallbackRef.current = true;
-        updateMode("synthetic");
-        return;
-      }
+      async function ensureAnalyser() {
+        const audioEl = audioRef.current;
+        if (!isActive || !audioEl || !audioEl.src) {
+          fallbackRef.current = true;
+          updateMode("synthetic");
+          return;
+        }
 
-      try {
+        try {
         if (!contextRef.current) {
           const AudioCtx = window.AudioContext || window.webkitAudioContext;
           contextRef.current = new AudioCtx();
@@ -181,12 +181,35 @@ function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange 
       }
     }
 
-    function tick() {
-      if (!mounted) return;
+      function tick() {
+        if (!mounted) return;
 
-      const now = performance.now();
+        const now = performance.now();
+        const audioEl = audioRef.current;
 
-      if (isActive) {
+        if (!audioEl || !audioEl.src) {
+          fallbackRef.current = true;
+          updateMode("synthetic");
+          const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
+          const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
+          setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
+          setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
+          raf = requestAnimationFrame(tick);
+          return;
+        }
+
+        if (!isActive) {
+          setupAttemptedRef.current = false;
+          fallbackRef.current = true;
+          updateMode("synthetic");
+          const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
+          const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
+          setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
+          setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
+          raf = requestAnimationFrame(tick);
+          return;
+        }
+
         if (!setupAttemptedRef.current) {
           setupAttemptedRef.current = true;
           void ensureAnalyser();
@@ -215,18 +238,9 @@ function useAudioSpectrum(audioRef, isActive, { lowBars, highBars, onModeChange 
           setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
           setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
         }
-      } else {
-        setupAttemptedRef.current = false;
-        fallbackRef.current = false;
-        updateMode("idle");
-        const zerosLow = new Array(lowBars).fill(0);
-        const zerosHigh = new Array(highBars).fill(0);
-        setLowLevels((prev) => smoothLevels(prev, zerosLow, 0.7));
-        setHighLevels((prev) => smoothLevels(prev, zerosHigh, 0.7));
-      }
 
-      raf = requestAnimationFrame(tick);
-    }
+        raf = requestAnimationFrame(tick);
+      }
 
     tick();
 
