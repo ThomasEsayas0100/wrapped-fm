@@ -526,7 +526,16 @@ export default function FeaturedSongSlide({ data = defaultData }) {
 
       const stream = await navigator.mediaDevices.getDisplayMedia({
         audio: true,
-        video: false,
+        // Some browsers require a video track in order to enable tab audio
+        // capture. Request the smallest possible surface and immediately drop
+        // the track after access is granted.
+        video: {
+          cursor: "never",
+          frameRate: 1,
+          width: 1,
+          height: 1,
+          displaySurface: "browser",
+        },
       });
 
       if (!stream) {
@@ -564,6 +573,10 @@ export default function FeaturedSongSlide({ data = defaultData }) {
       }
       if (error?.name === "NotAllowedError") {
         setTabCaptureError("Tab audio capture was blocked.");
+      } else if (error?.name === "NotSupportedError") {
+        setTabCaptureError(
+          "This browser requires sharing a tab (with video) to enable audio capture."
+        );
       } else if (error?.name === "NotFoundError") {
         setTabCaptureError("No audio source was available for the selected tab.");
       } else {
