@@ -397,6 +397,30 @@ function EqualizerRibbon({ side, levels }) {
 
     let animationFrame;
 
+    function drawRoundedRect(x, y, width, height, radius) {
+      const clampedRadius = Math.max(
+        0,
+        Math.min(radius, Math.abs(width) / 2, Math.abs(height) / 2)
+      );
+
+      ctx.beginPath();
+      ctx.moveTo(x + clampedRadius, y);
+      ctx.lineTo(x + width - clampedRadius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + clampedRadius);
+      ctx.lineTo(x + width, y + height - clampedRadius);
+      ctx.quadraticCurveTo(
+        x + width,
+        y + height,
+        x + width - clampedRadius,
+        y + height
+      );
+      ctx.lineTo(x + clampedRadius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - clampedRadius);
+      ctx.lineTo(x, y + clampedRadius);
+      ctx.quadraticCurveTo(x, y, x + clampedRadius, y);
+      ctx.closePath();
+    }
+
     function draw() {
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
@@ -417,48 +441,97 @@ function EqualizerRibbon({ side, levels }) {
 
       const width = rect.width;
       const height = rect.height;
-      const outerX = side === "left" ? width : 0;
-      const direction = side === "left" ? -1 : 1;
-      const verticalPadding = height * 0.12;
-      const baseThickness = width * 0.22;
-      const liveAmplitude = width * 0.58;
+      const isLeft = side === "left";
+      const outerX = isLeft ? width : 0;
+      const baseThickness = width * 0.14;
+      const amplitude = width * 0.56;
+      const rowHeight = height / ribbonLevels.length;
+      const glowColorStops = isLeft
+        ? [
+            "rgba(56, 189, 248, 0.18)",
+            "rgba(14, 165, 233, 0.28)",
+            "rgba(12, 74, 110, 0.05)",
+          ]
+        : [
+            "rgba(168, 85, 247, 0.18)",
+            "rgba(129, 140, 248, 0.28)",
+            "rgba(76, 29, 149, 0.06)",
+          ];
 
-      const gradient = ctx.createLinearGradient(
-        side === "left" ? width : 0,
+      const washGradient = ctx.createLinearGradient(
+        isLeft ? width : 0,
         0,
-        side === "left" ? 0 : width,
+        isLeft ? 0 : width,
         height
       );
-      gradient.addColorStop(0, "rgba(59, 130, 246, 0.9)");
-      gradient.addColorStop(0.4, "rgba(14, 165, 233, 0.75)");
-      gradient.addColorStop(1, "rgba(125, 211, 252, 0.35)");
+      glowColorStops.forEach((color, index) => {
+        washGradient.addColorStop(index / (glowColorStops.length - 1 || 1), color);
+      });
 
-      ctx.beginPath();
-      ctx.moveTo(outerX, -verticalPadding);
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = washGradient;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
 
-      const step = (height + verticalPadding * 2) / (ribbonLevels.length - 1);
-      let previousInnerX = outerX;
-      let previousY = -verticalPadding;
+      const beamGradient = ctx.createLinearGradient(
+        isLeft ? width : 0,
+        0,
+        isLeft ? 0 : width,
+        height
+      );
+      beamGradient.addColorStop(0, isLeft ? "#38bdf8" : "#c084fc");
+      beamGradient.addColorStop(0.4, isLeft ? "#22d3ee" : "#a855f7");
+      beamGradient.addColorStop(1, isLeft ? "#0ea5e9" : "#6366f1");
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
 
       for (let i = 0; i < ribbonLevels.length; i += 1) {
         const level = ribbonLevels[i];
-        const thickness = baseThickness + level * liveAmplitude;
-        const innerX = outerX + direction * thickness;
-        const y = -verticalPadding + step * i;
+        const normalized = Math.max(0, Math.min(1, level));
+        const bias = Math.sin((i / ribbonLevels.length) * Math.PI) * 0.12;
+        const pulse = Math.sin(performance.now() * 0.0018 + i * 0.45) * 0.06;
+        const thickness = baseThickness + amplitude * (normalized * 0.9 + bias * 0.6 + pulse);
+        const heightScale = 0.6 + normalized * 0.55;
+        const barHeight = rowHeight * heightScale;
+        const y = i * rowHeight + (rowHeight - barHeight) / 2;
+        const x = isLeft ? width - thickness : outerX;
 
-        const controlX = previousInnerX + (innerX - previousInnerX) * 0.68;
-        const controlY = previousY + step * 0.68;
+        ctx.globalAlpha = 0.7 + normalized * 0.25;
+        ctx.fillStyle = beamGradient;
+        drawRoundedRect(x, y, thickness, barHeight, barHeight * 0.35);
+        ctx.fill();
 
-        ctx.quadraticCurveTo(controlX, controlY, innerX, y);
+        const highlightWidth = thickness * (isLeft ? 0.22 : 0.18);
+        const highlightX = isLeft ? width - highlightWidth : x;
+        const highlightGradient = ctx.createLinearGradient(
+          highlightX,
+          y,
+          highlightX + highlightWidth,
+          y + barHeight
+        );
+        if (isLeft) {
+          highlightGradient.addColorStop(0, "rgba(224, 242, 254, 0.65)");
+          highlightGradient.addColorStop(1, "rgba(125, 211, 252, 0)");
+        } else {
+          highlightGradient.addColorStop(0, "rgba(236, 233, 254, 0.65)");
+          highlightGradient.addColorStop(1, "rgba(199, 210, 254, 0)");
+        }
 
-        previousInnerX = innerX;
-        previousY = y;
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = highlightGradient;
+        drawRoundedRect(
+          highlightX,
+          y + barHeight * 0.12,
+          highlightWidth,
+          barHeight * 0.76,
+          barHeight * 0.32
+        );
+        ctx.fill();
       }
 
-      ctx.lineTo(outerX, height + verticalPadding);
-      ctx.closePath();
-      ctx.fillStyle = gradient;
-      ctx.fill();
+      ctx.restore();
 
       animationFrame = requestAnimationFrame(draw);
     }
@@ -472,13 +545,13 @@ function EqualizerRibbon({ side, levels }) {
     <div
       className={`pointer-events-none absolute inset-y-[-14%] ${
         side === "left" ? "left-[-10%]" : "right-[-10%]"
-      } w-[clamp(240px,25vw,340px)]`}
+      } w-[clamp(220px,24vw,340px)]`}
     >
       <canvas ref={canvasRef} className="h-full w-full" />
       <div
         className={`absolute inset-0 ${
           side === "left" ? "bg-gradient-to-tr" : "bg-gradient-to-tl"
-        } from-sky-500/25 via-cyan-400/10 to-transparent blur-3xl mix-blend-screen`}
+        } from-sky-400/20 via-cyan-300/10 to-transparent blur-3xl mix-blend-screen`}
       />
     </div>
   );
@@ -782,7 +855,13 @@ export default function FeaturedSongSlide({ data = defaultData }) {
   }
 
   return (
-    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-gradient-to-b from-[#050816] via-[#070c1f] to-[#050816] px-6 py-16 text-white">
+    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#030712] px-6 py-16 text-white">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(59,130,246,0.22),transparent_55%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_80%_25%,rgba(124,58,237,0.18),transparent_52%)]" />
+        <div className="absolute inset-x-[10%] top-[-30%] h-[55%] rounded-full bg-gradient-to-b from-sky-500/30 via-transparent to-transparent blur-3xl" />
+        <div className="absolute inset-x-[5%] bottom-[-35%] h-[60%] rounded-full bg-gradient-to-t from-indigo-500/25 via-transparent to-transparent blur-3xl" />
+      </div>
       <EqualizerRibbon side="left" levels={lowLevels} />
       <EqualizerRibbon side="right" levels={highLevels} />
 
@@ -795,18 +874,18 @@ export default function FeaturedSongSlide({ data = defaultData }) {
         </h1>
 
         <div className="flex flex-col items-center gap-8">
-          <div className="rounded-[2.5rem] border-[14px] border-[#151b35] bg-[#0c1430] p-4 shadow-[0_32px_90px_rgba(7,11,28,0.65)]">
+          <div className="rounded-[2.5rem] border border-white/10 bg-white/5 p-3 backdrop-blur-xl shadow-[0_35px_110px_rgba(8,14,35,0.55)]">
             <img
               src={data.albumArtUrl}
               alt={data.album ? `${data.title} album cover for ${data.album}` : `${data.title} album cover`}
-              className="h-64 w-64 rounded-[1.75rem] object-cover md:h-72 md:w-72"
+              className="h-64 w-64 rounded-[1.75rem] object-cover ring-1 ring-white/10 md:h-72 md:w-72"
             />
           </div>
 
           <div className="space-y-3">
-            <p className="text-4xl font-bold md:text-5xl">{data.title}</p>
+            <p className="text-4xl font-bold tracking-tight md:text-5xl">{data.title}</p>
             <p className="text-xl font-medium text-white/90 md:text-2xl">{data.artist}</p>
-            <p className="text-sm uppercase tracking-[0.4em] text-white/55 md:text-base">{data.album}</p>
+            <p className="text-xs uppercase tracking-[0.55em] text-white/50 md:text-sm">{data.album}</p>
           </div>
         </div>
 
@@ -816,10 +895,10 @@ export default function FeaturedSongSlide({ data = defaultData }) {
               type="button"
               onClick={handleTogglePlayback}
               disabled={!audioSource.url || audioSource.status !== "ready" || isTabCaptureActive}
-              className={`rounded-full px-6 py-2 font-medium tracking-wide transition ${
+              className={`rounded-full px-6 py-2 font-semibold tracking-wide transition ${
                 !audioSource.url || audioSource.status !== "ready" || isTabCaptureActive
-                  ? "cursor-not-allowed bg-white/10 text-white/40"
-                  : "bg-white/10 hover:bg-white/20"
+                  ? "cursor-not-allowed bg-white/10 text-white/35"
+                  : "bg-white/80 text-slate-950 shadow-lg shadow-sky-500/30 transition hover:shadow-sky-400/40"
               }`}
             >
               {isPlaying ? "Stop playback" : "Play track"}
@@ -841,7 +920,7 @@ export default function FeaturedSongSlide({ data = defaultData }) {
                 className={`rounded-full px-6 py-2 font-semibold transition ${
                   isTabCaptureLoading
                     ? "cursor-wait bg-sky-400/40 text-sky-100/70"
-                    : "bg-sky-400/80 text-sky-950 hover:bg-sky-300"
+                    : "bg-sky-400/80 text-sky-950 shadow-lg shadow-sky-500/40 hover:bg-sky-300"
                 }`}
               >
                 {isTabCaptureLoading ? "Starting tab capture..." : "Share tab audio for visualizer"}
@@ -867,7 +946,9 @@ export default function FeaturedSongSlide({ data = defaultData }) {
           )}
 
           {analysisMessage ? (
-            <p className="max-w-sm text-center text-xs text-white/60">{analysisMessage}</p>
+            <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[11px] font-medium uppercase tracking-[0.3em] text-white/70">
+              {analysisMessage}
+            </div>
           ) : null}
         </div>
       </div>
