@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const defaultData = {
   title: "Get Lucky",
@@ -152,7 +152,8 @@ function generateSyntheticLevels(count, now, speed = 0.0026) {
 function useAudioSpectrum(
   audioRef,
   isActive,
-  { lowBars, highBars, onModeChange, sourceLabel, sourceVersion }
+  { lowBars, highBars, onModeChange, sourceLabel, sourceVersion },
+  tabAudioStream
 ) {
   const [lowLevels, setLowLevels] = useState(() => new Array(lowBars).fill(0));
   const [highLevels, setHighLevels] = useState(() => new Array(highBars).fill(0));
@@ -160,6 +161,7 @@ function useAudioSpectrum(
   const analyserRef = useRef(null);
   const contextRef = useRef(null);
   const sourceRef = useRef(null);
+  const elementSourceRef = useRef(null);
   const bufferRef = useRef(null);
   const modeRef = useRef("idle");
   const fallbackRef = useRef(true);
@@ -185,18 +187,26 @@ function useAudioSpectrum(
   }, [sourceVersion]);
 
   useEffect(() => {
+    setupAttemptedRef.current = false;
+  }, [tabAudioStream]);
+
+  useEffect(() => {
     let raf = 0;
     let mounted = true;
 
-      async function ensureAnalyser() {
-        const audioEl = audioRef.current;
-        if (!isActive || !audioEl || !audioEl.src) {
-          fallbackRef.current = true;
-          updateMode("synthetic");
-          return;
-        }
+    async function ensureAnalyser() {
+      const audioEl = audioRef.current;
+      const shouldAnalyse = isActive || Boolean(tabAudioStream);
+      const hasElementSource = Boolean(audioEl && audioEl.src);
+      const hasTabStream = Boolean(tabAudioStream);
 
-        try {
+      if (!shouldAnalyse || (!hasElementSource && !hasTabStream)) {
+        fallbackRef.current = true;
+        updateMode("synthetic");
+        return;
+      }
+
+      try {
         if (!contextRef.current) {
           const AudioCtx = window.AudioContext || window.webkitAudioContext;
           contextRef.current = new AudioCtx();
@@ -206,25 +216,80 @@ function useAudioSpectrum(
           await ctx.resume();
         }
 
-        if (!sourceRef.current) {
-          const source = ctx.createMediaElementSource(audioEl);
+        const desiredType = hasTabStream ? "tab" : "element";
+        const needsRebuild =
+          !sourceRef.current ||
+          sourceRef.current.type !== desiredType ||
+          (desiredType === "tab" && sourceRef.current.stream !== tabAudioStream);
+
+        if (needsRebuild) {
+          if (sourceRef.current) {
+            try {
+              sourceRef.current.node.disconnect();
+            } catch (error) {
+              console.warn("Unable to disconnect previous audio node", error);
+            }
+            if (sourceRef.current.gain) {
+              try {
+                sourceRef.current.gain.disconnect();
+              } catch (error) {
+                console.warn("Unable to disconnect previous gain node", error);
+              }
+            }
+            sourceRef.current = null;
+          }
+
+          if (analyserRef.current) {
+            try {
+              analyserRef.current.disconnect();
+            } catch {
+              // ignore
+            }
+            analyserRef.current = null;
+          }
+
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 1024;
           analyser.smoothingTimeConstant = 0.82;
           const gain = ctx.createGain();
           gain.gain.value = 0;
 
-          source.connect(analyser);
+          let sourceNode;
+
+          if (desiredType === "tab") {
+            sourceNode = ctx.createMediaStreamSource(tabAudioStream);
+            sourceRef.current = {
+              node: sourceNode,
+              type: "tab",
+              stream: tabAudioStream,
+              gain,
+            };
+          } else {
+            if (!elementSourceRef.current) {
+              elementSourceRef.current = ctx.createMediaElementSource(audioEl);
+            }
+            sourceNode = elementSourceRef.current;
+            sourceRef.current = {
+              node: sourceNode,
+              type: "element",
+              gain,
+            };
+          }
+
+          sourceNode.connect(analyser);
           analyser.connect(gain);
           gain.connect(ctx.destination);
 
-          sourceRef.current = source;
           analyserRef.current = analyser;
           bufferRef.current = new Uint8Array(analyser.frequencyBinCount);
         }
 
         fallbackRef.current = false;
-        updateMode(sourceLabel ? `audio:${sourceLabel}` : "audio");
+        if (hasTabStream) {
+          updateMode("audio:tab-capture");
+        } else {
+          updateMode(sourceLabel ? `audio:${sourceLabel}` : "audio");
+        }
       } catch (error) {
         console.warn("Falling back to synthetic equalizer", error);
         fallbackRef.current = true;
@@ -239,66 +304,69 @@ function useAudioSpectrum(
       }
     }
 
-      function tick() {
-        if (!mounted) return;
+    function tick() {
+      if (!mounted) return;
 
-        const now = performance.now();
-        const audioEl = audioRef.current;
+      const now = performance.now();
+      const audioEl = audioRef.current;
+      const hasElementSource = Boolean(audioEl && audioEl.src);
+      const hasTabStream = Boolean(tabAudioStream);
+      const shouldAnalyse = isActive || hasTabStream;
 
-        if (!audioEl || !audioEl.src) {
-          fallbackRef.current = true;
-          updateMode("synthetic");
-          const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
-          const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
-          setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
-          setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
-          raf = requestAnimationFrame(tick);
-          return;
-        }
-
-        if (!isActive) {
-          setupAttemptedRef.current = false;
-          fallbackRef.current = true;
-          updateMode("synthetic");
-          const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
-          const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
-          setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
-          setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
-          raf = requestAnimationFrame(tick);
-          return;
-        }
-
-        if (!setupAttemptedRef.current) {
-          setupAttemptedRef.current = true;
-          void ensureAnalyser();
-        }
-
-        if (!fallbackRef.current && analyserRef.current && bufferRef.current) {
-          const analyser = analyserRef.current;
-          const buffer = bufferRef.current;
-          analyser.getByteFrequencyData(buffer);
-
-          const midpoint = Math.floor(buffer.length / 2);
-          const low = distributeFrequencies(buffer, 0, midpoint, lowBars);
-          const high = distributeFrequencies(
-            buffer,
-            midpoint,
-            buffer.length,
-            highBars
-          );
-
-          setLowLevels((prev) => smoothLevels(prev, low, 0.58));
-          setHighLevels((prev) => smoothLevels(prev, high, 0.6));
-        } else {
-          updateMode("synthetic");
-          const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
-          const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
-          setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
-          setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
-        }
-
+      if (!hasElementSource && !hasTabStream) {
+        fallbackRef.current = true;
+        updateMode("synthetic");
+        const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
+        const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
+        setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
+        setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
         raf = requestAnimationFrame(tick);
+        return;
       }
+
+      if (!shouldAnalyse) {
+        setupAttemptedRef.current = false;
+        fallbackRef.current = true;
+        updateMode("synthetic");
+        const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
+        const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
+        setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
+        setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (!setupAttemptedRef.current) {
+        setupAttemptedRef.current = true;
+        void ensureAnalyser();
+      }
+
+      if (!fallbackRef.current && analyserRef.current && bufferRef.current) {
+        const analyser = analyserRef.current;
+        const buffer = bufferRef.current;
+        analyser.getByteFrequencyData(buffer);
+
+        const midpoint = Math.floor(buffer.length / 2);
+        const low = distributeFrequencies(buffer, 0, midpoint, lowBars);
+        const high = distributeFrequencies(
+          buffer,
+          midpoint,
+          buffer.length,
+          highBars
+        );
+
+        setLowLevels((prev) => smoothLevels(prev, low, 0.58));
+        setHighLevels((prev) => smoothLevels(prev, high, 0.6));
+      } else {
+        updateMode("synthetic");
+        const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
+        const syntheticHigh = generateSyntheticLevels(highBars, now + 260, 0.0029);
+        setLowLevels((prev) => smoothLevels(prev, syntheticLow, 0.8));
+        setHighLevels((prev) => smoothLevels(prev, syntheticHigh, 0.8));
+      }
+
+      raf = requestAnimationFrame(tick);
+    }
 
     tick();
 
@@ -306,7 +374,7 @@ function useAudioSpectrum(
       mounted = false;
       cancelAnimationFrame(raf);
     };
-    }, [audioRef, isActive, lowBars, highBars, onModeChange, sourceLabel]);
+  }, [audioRef, isActive, lowBars, highBars, onModeChange, sourceLabel, tabAudioStream]);
 
   return useMemo(
     () => ({
@@ -419,6 +487,9 @@ function EqualizerRibbon({ side, levels }) {
 export default function FeaturedSongSlide({ data = defaultData }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [analysisMode, setAnalysisMode] = useState("idle");
+  const [tabAudioStream, setTabAudioStream] = useState(null);
+  const [isTabCaptureLoading, setIsTabCaptureLoading] = useState(false);
+  const [tabCaptureError, setTabCaptureError] = useState(null);
   const previewAudioRef = useRef(null);
 
   const [audioSource, setAudioSource] = useState(() => ({
@@ -426,6 +497,82 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     label: data.previewAudioUrl ? "preview" : "none",
     status: data.previewAudioUrl ? "ready" : "idle",
   }));
+
+  const stopTabAudioCapture = useCallback(() => {
+    setTabAudioStream((current) => {
+      if (current) {
+        current.getTracks().forEach((track) => track.stop());
+      }
+      return null;
+    });
+    setTabCaptureError(null);
+  }, []);
+
+  const startTabAudioCapture = useCallback(async () => {
+    if (isTabCaptureLoading) return;
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getDisplayMedia !== "function"
+    ) {
+      setTabCaptureError("Tab audio capture is not supported in this browser.");
+      return;
+    }
+
+    try {
+      setTabCaptureError(null);
+      setIsTabCaptureLoading(true);
+
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        audio: true,
+        video: false,
+      });
+
+      if (!stream) {
+        setTabCaptureError("No stream was returned when starting tab capture.");
+        setIsTabCaptureLoading(false);
+        return;
+      }
+
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        stream.getTracks().forEach((track) => track.stop());
+        setTabCaptureError("No audio tracks found in the shared stream.");
+        setIsTabCaptureLoading(false);
+        return;
+      }
+
+      stream.getVideoTracks().forEach((track) => track.stop());
+
+      setTabAudioStream((previous) => {
+        if (previous && previous !== stream) {
+          previous.getTracks().forEach((track) => track.stop());
+        }
+        return stream;
+      });
+
+      setIsPlaying(false);
+      const audio = previewAudioRef.current;
+      if (audio) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        console.warn("Tab audio capture failed", error);
+      }
+      if (error?.name === "NotAllowedError") {
+        setTabCaptureError("Tab audio capture was blocked.");
+      } else if (error?.name === "NotFoundError") {
+        setTabCaptureError("No audio source was available for the selected tab.");
+      } else {
+        setTabCaptureError("Unable to start tab audio capture.");
+      }
+    } finally {
+      setIsTabCaptureLoading(false);
+    }
+  }, [isTabCaptureLoading, previewAudioRef, setIsPlaying]);
 
   useEffect(() => {
     let cancelled = false;
@@ -469,17 +616,57 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     };
   }, [data.previewAudioUrl, data.youtubeUrl]);
 
-  const embedUrl = isPlaying ? getYouTubeEmbedUrl(data.youtubeUrl) : null;
+  useEffect(() => {
+    if (!tabAudioStream) return undefined;
 
-  const { lowLevels, highLevels } = useAudioSpectrum(previewAudioRef, isPlaying, {
-    lowBars: 48,
-    highBars: 48,
-    onModeChange: setAnalysisMode,
-    sourceLabel: audioSource.label && audioSource.label !== "none" ? audioSource.label : null,
-    sourceVersion: audioSource.url ?? audioSource.status,
-  });
+    const handleEnded = () => {
+      stopTabAudioCapture();
+    };
+
+    tabAudioStream.getTracks().forEach((track) => {
+      track.addEventListener("ended", handleEnded);
+      track.addEventListener("inactive", handleEnded);
+    });
+
+    return () => {
+      tabAudioStream.getTracks().forEach((track) => {
+        track.removeEventListener("ended", handleEnded);
+        track.removeEventListener("inactive", handleEnded);
+      });
+    };
+  }, [tabAudioStream, stopTabAudioCapture]);
+
+  useEffect(
+    () => () => {
+      stopTabAudioCapture();
+    },
+    [stopTabAudioCapture]
+  );
+
+  const embedUrl = isPlaying ? getYouTubeEmbedUrl(data.youtubeUrl) : null;
+  const isTabCaptureActive = Boolean(tabAudioStream);
+
+  const { lowLevels, highLevels } = useAudioSpectrum(
+    previewAudioRef,
+    isPlaying,
+    {
+      lowBars: 48,
+      highBars: 48,
+      onModeChange: setAnalysisMode,
+      sourceLabel: audioSource.label && audioSource.label !== "none" ? audioSource.label : null,
+      sourceVersion: audioSource.url ?? audioSource.status,
+    },
+    tabAudioStream
+  );
 
   const analysisMessage = useMemo(() => {
+    if (tabAudioStream) {
+      if (analysisMode === "audio:tab-capture") {
+        return "Visualizer synced to shared tab audio.";
+      }
+      return "Tab audio sharing active — waiting for audio from the shared tab.";
+    }
+
     if (analysisMode === "audio") {
       return "Visualizer synced to audio source.";
     }
@@ -509,7 +696,7 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     }
 
     return null;
-  }, [analysisMode, audioSource.status, audioSource.label]);
+  }, [analysisMode, audioSource.status, audioSource.label, tabAudioStream]);
 
   useEffect(() => {
     const audio = previewAudioRef.current;
@@ -540,6 +727,7 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     async function playIfReady() {
       const audio = previewAudioRef.current;
       if (!audio || !isPlaying) return;
+      if (tabAudioStream) return;
       if (!audioSource.url || audioSource.status !== "ready") return;
 
       try {
@@ -550,9 +738,15 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     }
 
     void playIfReady();
-  }, [audioSource.status, audioSource.url, isPlaying]);
+  }, [audioSource.status, audioSource.url, isPlaying, tabAudioStream]);
 
   async function handleTogglePlayback() {
+    if (tabAudioStream) {
+      return;
+    }
+    if (!audioSource.url || audioSource.status !== "ready") {
+      return;
+    }
     if (isPlaying) {
       setIsPlaying(false);
       if (previewAudioRef.current) {
@@ -603,33 +797,66 @@ export default function FeaturedSongSlide({ data = defaultData }) {
           </div>
         </div>
 
-        {data.youtubeUrl ? (
-          <div className="flex flex-col items-center gap-3 text-sm text-white/80">
+        <div className="flex flex-col items-center gap-4 text-sm text-white/80">
+          <div className="flex flex-wrap items-center justify-center gap-3">
             <button
               type="button"
               onClick={handleTogglePlayback}
-              className="rounded-full bg-white/10 px-6 py-2 font-medium tracking-wide transition hover:bg-white/20"
+              disabled={!audioSource.url || audioSource.status !== "ready" || isTabCaptureActive}
+              className={`rounded-full px-6 py-2 font-medium tracking-wide transition ${
+                !audioSource.url || audioSource.status !== "ready" || isTabCaptureActive
+                  ? "cursor-not-allowed bg-white/10 text-white/40"
+                  : "bg-white/10 hover:bg-white/20"
+              }`}
             >
               {isPlaying ? "Stop playback" : "Play track"}
             </button>
 
-            {embedUrl && (
-              <iframe
-                key={embedUrl}
-                src={embedUrl}
-                title="Top song audio player"
-                allow="autoplay; encrypted-media"
-                aria-hidden="true"
-                tabIndex={-1}
-                className="absolute h-px w-px overflow-hidden"
-                style={{ clip: "rect(0 0 0 0)" }}
-              />
+            {isTabCaptureActive ? (
+              <button
+                type="button"
+                onClick={stopTabAudioCapture}
+                className="rounded-full bg-emerald-400/90 px-6 py-2 font-semibold text-emerald-950 transition hover:bg-emerald-300"
+              >
+                Stop sharing tab audio
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={startTabAudioCapture}
+                disabled={isTabCaptureLoading}
+                className={`rounded-full px-6 py-2 font-semibold transition ${
+                  isTabCaptureLoading
+                    ? "cursor-wait bg-sky-400/40 text-sky-100/70"
+                    : "bg-sky-400/80 text-sky-950 hover:bg-sky-300"
+                }`}
+              >
+                {isTabCaptureLoading ? "Starting tab capture..." : "Share tab audio for visualizer"}
+              </button>
             )}
-            {analysisMessage ? (
-              <p className="text-xs text-white/60 text-center max-w-sm">{analysisMessage}</p>
-            ) : null}
           </div>
-        ) : null}
+
+          {tabCaptureError ? (
+            <p className="max-w-sm text-center text-xs text-rose-200/90">{tabCaptureError}</p>
+          ) : null}
+
+          {embedUrl && (
+            <iframe
+              key={embedUrl}
+              src={embedUrl}
+              title="Top song audio player"
+              allow="autoplay; encrypted-media"
+              aria-hidden="true"
+              tabIndex={-1}
+              className="absolute h-px w-px overflow-hidden"
+              style={{ clip: "rect(0 0 0 0)" }}
+            />
+          )}
+
+          {analysisMessage ? (
+            <p className="max-w-sm text-center text-xs text-white/60">{analysisMessage}</p>
+          ) : null}
+        </div>
       </div>
 
       <audio ref={previewAudioRef} />
