@@ -1,9 +1,9 @@
-import LiveMapWrapper from "./components/LiveMapWrapper";
+import FeaturedSongSlide from "./slides/FeaturedSongSlide";
 
 function App() {
   return (
     <div className="w-full h-screen overflow-hidden">
-      <LiveMapWrapper />
+      <FeaturedSongSlide />
     </div>
   );
 }
