@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const defaultData = {
   title: "Get Lucky",
@@ -152,8 +152,7 @@ function generateSyntheticLevels(count, now, speed = 0.0026) {
 function useAudioSpectrum(
   audioRef,
   isActive,
-  { lowBars, highBars, onModeChange, sourceLabel, sourceVersion },
-  tabAudioStream
+  { lowBars, highBars, onModeChange, sourceLabel, sourceVersion }
 ) {
   const [lowLevels, setLowLevels] = useState(() => new Array(lowBars).fill(0));
   const [highLevels, setHighLevels] = useState(() => new Array(highBars).fill(0));
@@ -187,20 +186,15 @@ function useAudioSpectrum(
   }, [sourceVersion]);
 
   useEffect(() => {
-    setupAttemptedRef.current = false;
-  }, [tabAudioStream]);
-
-  useEffect(() => {
     let raf = 0;
     let mounted = true;
 
     async function ensureAnalyser() {
       const audioEl = audioRef.current;
-      const shouldAnalyse = isActive || Boolean(tabAudioStream);
+      const shouldAnalyse = isActive;
       const hasElementSource = Boolean(audioEl && audioEl.src);
-      const hasTabStream = Boolean(tabAudioStream);
 
-      if (!shouldAnalyse || (!hasElementSource && !hasTabStream)) {
+      if (!shouldAnalyse || !hasElementSource) {
         fallbackRef.current = true;
         updateMode("synthetic");
         return;
@@ -216,11 +210,7 @@ function useAudioSpectrum(
           await ctx.resume();
         }
 
-        const desiredType = hasTabStream ? "tab" : "element";
-        const needsRebuild =
-          !sourceRef.current ||
-          sourceRef.current.type !== desiredType ||
-          (desiredType === "tab" && sourceRef.current.stream !== tabAudioStream);
+        const needsRebuild = !sourceRef.current;
 
         if (needsRebuild) {
           if (sourceRef.current) {
@@ -254,27 +244,15 @@ function useAudioSpectrum(
           const gain = ctx.createGain();
           gain.gain.value = 0;
 
-          let sourceNode;
-
-          if (desiredType === "tab") {
-            sourceNode = ctx.createMediaStreamSource(tabAudioStream);
-            sourceRef.current = {
-              node: sourceNode,
-              type: "tab",
-              stream: tabAudioStream,
-              gain,
-            };
-          } else {
-            if (!elementSourceRef.current) {
-              elementSourceRef.current = ctx.createMediaElementSource(audioEl);
-            }
-            sourceNode = elementSourceRef.current;
-            sourceRef.current = {
-              node: sourceNode,
-              type: "element",
-              gain,
-            };
+          if (!elementSourceRef.current) {
+            elementSourceRef.current = ctx.createMediaElementSource(audioEl);
           }
+          const sourceNode = elementSourceRef.current;
+          sourceRef.current = {
+            node: sourceNode,
+            type: "element",
+            gain,
+          };
 
           sourceNode.connect(analyser);
           analyser.connect(gain);
@@ -285,11 +263,7 @@ function useAudioSpectrum(
         }
 
         fallbackRef.current = false;
-        if (hasTabStream) {
-          updateMode("audio:tab-capture");
-        } else {
-          updateMode(sourceLabel ? `audio:${sourceLabel}` : "audio");
-        }
+        updateMode(sourceLabel ? `audio:${sourceLabel}` : "audio");
       } catch (error) {
         console.warn("Falling back to synthetic equalizer", error);
         fallbackRef.current = true;
@@ -310,10 +284,9 @@ function useAudioSpectrum(
       const now = performance.now();
       const audioEl = audioRef.current;
       const hasElementSource = Boolean(audioEl && audioEl.src);
-      const hasTabStream = Boolean(tabAudioStream);
-      const shouldAnalyse = isActive || hasTabStream;
+      const shouldAnalyse = isActive;
 
-      if (!hasElementSource && !hasTabStream) {
+      if (!hasElementSource) {
         fallbackRef.current = true;
         updateMode("synthetic");
         const syntheticLow = generateSyntheticLevels(lowBars, now, 0.0024);
@@ -374,7 +347,7 @@ function useAudioSpectrum(
       mounted = false;
       cancelAnimationFrame(raf);
     };
-  }, [audioRef, isActive, lowBars, highBars, onModeChange, sourceLabel, tabAudioStream]);
+  }, [audioRef, isActive, lowBars, highBars, onModeChange, sourceLabel]);
 
   return useMemo(
     () => ({
@@ -560,9 +533,6 @@ function EqualizerRibbon({ side, levels }) {
 export default function FeaturedSongSlide({ data = defaultData }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [analysisMode, setAnalysisMode] = useState("idle");
-  const [tabAudioStream, setTabAudioStream] = useState(null);
-  const [isTabCaptureLoading, setIsTabCaptureLoading] = useState(false);
-  const [tabCaptureError, setTabCaptureError] = useState(null);
   const previewAudioRef = useRef(null);
 
   const [audioSource, setAudioSource] = useState(() => ({
@@ -570,95 +540,6 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     label: data.previewAudioUrl ? "preview" : "none",
     status: data.previewAudioUrl ? "ready" : "idle",
   }));
-
-  const stopTabAudioCapture = useCallback(() => {
-    setTabAudioStream((current) => {
-      if (current) {
-        current.getTracks().forEach((track) => track.stop());
-      }
-      return null;
-    });
-    setTabCaptureError(null);
-  }, []);
-
-  const startTabAudioCapture = useCallback(async () => {
-    if (isTabCaptureLoading) return;
-
-    if (
-      typeof navigator === "undefined" ||
-      !navigator.mediaDevices ||
-      typeof navigator.mediaDevices.getDisplayMedia !== "function"
-    ) {
-      setTabCaptureError("Tab audio capture is not supported in this browser.");
-      return;
-    }
-
-    try {
-      setTabCaptureError(null);
-      setIsTabCaptureLoading(true);
-
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        audio: true,
-        // Some browsers require a video track in order to enable tab audio
-        // capture. Request the smallest possible surface and immediately drop
-        // the track after access is granted.
-        video: {
-          cursor: "never",
-          frameRate: 1,
-          width: 1,
-          height: 1,
-          displaySurface: "browser",
-        },
-      });
-
-      if (!stream) {
-        setTabCaptureError("No stream was returned when starting tab capture.");
-        setIsTabCaptureLoading(false);
-        return;
-      }
-
-      const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length === 0) {
-        stream.getTracks().forEach((track) => track.stop());
-        setTabCaptureError("No audio tracks found in the shared stream.");
-        setIsTabCaptureLoading(false);
-        return;
-      }
-
-      stream.getVideoTracks().forEach((track) => track.stop());
-
-      setTabAudioStream((previous) => {
-        if (previous && previous !== stream) {
-          previous.getTracks().forEach((track) => track.stop());
-        }
-        return stream;
-      });
-
-      setIsPlaying(false);
-      const audio = previewAudioRef.current;
-      if (audio) {
-        audio.pause();
-        audio.currentTime = 0;
-      }
-    } catch (error) {
-      if (error?.name !== "AbortError") {
-        console.warn("Tab audio capture failed", error);
-      }
-      if (error?.name === "NotAllowedError") {
-        setTabCaptureError("Tab audio capture was blocked.");
-      } else if (error?.name === "NotSupportedError") {
-        setTabCaptureError(
-          "This browser requires sharing a tab (with video) to enable audio capture."
-        );
-      } else if (error?.name === "NotFoundError") {
-        setTabCaptureError("No audio source was available for the selected tab.");
-      } else {
-        setTabCaptureError("Unable to start tab audio capture.");
-      }
-    } finally {
-      setIsTabCaptureLoading(false);
-    }
-  }, [isTabCaptureLoading, previewAudioRef, setIsPlaying]);
 
   useEffect(() => {
     let cancelled = false;
@@ -702,35 +583,7 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     };
   }, [data.previewAudioUrl, data.youtubeUrl]);
 
-  useEffect(() => {
-    if (!tabAudioStream) return undefined;
-
-    const handleEnded = () => {
-      stopTabAudioCapture();
-    };
-
-    tabAudioStream.getTracks().forEach((track) => {
-      track.addEventListener("ended", handleEnded);
-      track.addEventListener("inactive", handleEnded);
-    });
-
-    return () => {
-      tabAudioStream.getTracks().forEach((track) => {
-        track.removeEventListener("ended", handleEnded);
-        track.removeEventListener("inactive", handleEnded);
-      });
-    };
-  }, [tabAudioStream, stopTabAudioCapture]);
-
-  useEffect(
-    () => () => {
-      stopTabAudioCapture();
-    },
-    [stopTabAudioCapture]
-  );
-
   const embedUrl = isPlaying ? getYouTubeEmbedUrl(data.youtubeUrl) : null;
-  const isTabCaptureActive = Boolean(tabAudioStream);
 
   const { lowLevels, highLevels } = useAudioSpectrum(
     previewAudioRef,
@@ -741,18 +594,10 @@ export default function FeaturedSongSlide({ data = defaultData }) {
       onModeChange: setAnalysisMode,
       sourceLabel: audioSource.label && audioSource.label !== "none" ? audioSource.label : null,
       sourceVersion: audioSource.url ?? audioSource.status,
-    },
-    tabAudioStream
+    }
   );
 
   const analysisMessage = useMemo(() => {
-    if (tabAudioStream) {
-      if (analysisMode === "audio:tab-capture") {
-        return "Visualizer synced to shared tab audio.";
-      }
-      return "Tab audio sharing active — waiting for audio from the shared tab.";
-    }
-
     if (analysisMode === "audio") {
       return "Visualizer synced to audio source.";
     }
@@ -782,7 +627,7 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     }
 
     return null;
-  }, [analysisMode, audioSource.status, audioSource.label, tabAudioStream]);
+  }, [analysisMode, audioSource.status, audioSource.label]);
 
   useEffect(() => {
     const audio = previewAudioRef.current;
@@ -813,7 +658,6 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     async function playIfReady() {
       const audio = previewAudioRef.current;
       if (!audio || !isPlaying) return;
-      if (tabAudioStream) return;
       if (!audioSource.url || audioSource.status !== "ready") return;
 
       try {
@@ -824,12 +668,9 @@ export default function FeaturedSongSlide({ data = defaultData }) {
     }
 
     void playIfReady();
-  }, [audioSource.status, audioSource.url, isPlaying, tabAudioStream]);
+  }, [audioSource.status, audioSource.url, isPlaying]);
 
   async function handleTogglePlayback() {
-    if (tabAudioStream) {
-      return;
-    }
     if (!audioSource.url || audioSource.status !== "ready") {
       return;
     }
@@ -894,43 +735,16 @@ export default function FeaturedSongSlide({ data = defaultData }) {
             <button
               type="button"
               onClick={handleTogglePlayback}
-              disabled={!audioSource.url || audioSource.status !== "ready" || isTabCaptureActive}
+              disabled={!audioSource.url || audioSource.status !== "ready"}
               className={`rounded-full px-6 py-2 font-semibold tracking-wide transition ${
-                !audioSource.url || audioSource.status !== "ready" || isTabCaptureActive
+                !audioSource.url || audioSource.status !== "ready"
                   ? "cursor-not-allowed bg-white/10 text-white/35"
                   : "bg-white/80 text-slate-950 shadow-lg shadow-sky-500/30 transition hover:shadow-sky-400/40"
               }`}
             >
-              {isPlaying ? "Stop playback" : "Play track"}
+              {isPlaying ? "Stop playback" : audioSource.status === "loading" ? "Loading..." : "Play track"}
             </button>
-
-            {isTabCaptureActive ? (
-              <button
-                type="button"
-                onClick={stopTabAudioCapture}
-                className="rounded-full bg-emerald-400/90 px-6 py-2 font-semibold text-emerald-950 transition hover:bg-emerald-300"
-              >
-                Stop sharing tab audio
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={startTabAudioCapture}
-                disabled={isTabCaptureLoading}
-                className={`rounded-full px-6 py-2 font-semibold transition ${
-                  isTabCaptureLoading
-                    ? "cursor-wait bg-sky-400/40 text-sky-100/70"
-                    : "bg-sky-400/80 text-sky-950 shadow-lg shadow-sky-500/40 hover:bg-sky-300"
-                }`}
-              >
-                {isTabCaptureLoading ? "Starting tab capture..." : "Share tab audio for visualizer"}
-              </button>
-            )}
           </div>
-
-          {tabCaptureError ? (
-            <p className="max-w-sm text-center text-xs text-rose-200/90">{tabCaptureError}</p>
-          ) : null}
 
           {embedUrl && (
             <iframe
